@@ -1,0 +1,37 @@
+{
+  "name": "z2m-cli",
+  "version": "1.0.0",
+  "description": "CLI tool for interacting with Zigbee2MQTT instances",
+  "type": "module",
+  "bin": {
+    "z2m-cli": "./bin/z2m-cli.ts",
+    "z2m": "./bin/z2m-cli.ts"
+  },
+  "main": "./lib/api.ts",
+  "exports": {
+    ".": "./lib/api.ts",
+    "./api": "./lib/api.ts"
+  },
+  "scripts": {
+    "start": "bun run bin/z2m-cli.ts",
+    "dev": "bun --watch run bin/z2m-cli.ts",
+    "test": "bun run bin/z2m-cli.ts --help",
+    "build": "bun build bin/z2m-cli.ts --compile --outfile z2m-cli"
+  },
+  "keywords": [
+    "zigbee2mqtt",
+    "zigbee",
+    "cli",
+    "home-automation",
+    "iot",
+    "bun"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "dependencies": {
+    "picocolors": "^1.1.1"
+  }
+}

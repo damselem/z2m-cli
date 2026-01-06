@@ -4,8 +4,10 @@
  */
 
 import { parseArgs } from 'util';
-import { Z2MClient, type Z2MDevice, type DiagnosticIssue } from '../lib/api';
+import { Z2MClient, type Z2MDevice } from '../lib/api';
+import { resolveConfig, loadConfig, saveConfig, getConfigFilePath, configExists, type Config } from '../lib/config';
 import pc from 'picocolors';
+import Table from 'cli-table3';
 
 // Color aliases for semantic usage
 const c = {
@@ -17,14 +19,31 @@ const c = {
   dim: pc.dim,
 };
 
+// Table helper - minimal style without borders
+function createTable(head: string[]): Table.Table {
+  return new Table({
+    head: head.map(h => c.bold(h)),
+    style: { head: [], border: [], compact: true },
+    chars: {
+      'top': '', 'top-mid': '', 'top-left': '', 'top-right': '',
+      'bottom': '', 'bottom-mid': '', 'bottom-left': '', 'bottom-right': '',
+      'left': '  ', 'left-mid': '', 'mid': '', 'mid-mid': '',
+      'right': '', 'right-mid': '', 'middle': '  ',
+    },
+  });
+}
+
 // Global options
 let globalUrl: string | undefined;
+let globalTimeout: number | undefined;
 let outputJson = false;
 
 function getClient(): Z2MClient {
-  return new Z2MClient({
-    url: globalUrl,
+  const config = resolveConfig({
+    cliUrl: globalUrl,
+    cliTimeout: globalTimeout,
   });
+  return new Z2MClient(config);
 }
 
 function output(data: unknown): void {
@@ -43,7 +62,7 @@ function error(message: string): void {
 }
 
 function formatLastSeen(lastSeen: string | undefined): string {
-  if (!lastSeen) return c.dim('unknown');
+  if (!lastSeen) return c.dim('--');
   const date = new Date(lastSeen);
   const now = Date.now();
   const diffMs = now - date.getTime();
@@ -51,11 +70,11 @@ function formatLastSeen(lastSeen: string | undefined): string {
   const diffHours = Math.floor(diffMins / 60);
   const diffDays = Math.floor(diffHours / 24);
 
-  if (diffMins < 5) return c.success('just now');
-  if (diffMins < 60) return c.success(`${diffMins}m ago`);
-  if (diffHours < 24) return c.info(`${diffHours}h ago`);
-  if (diffDays < 7) return c.warn(`${diffDays}d ago`);
-  return c.error(`${diffDays}d ago`);
+  if (diffMins < 5) return c.success('now');
+  if (diffMins < 60) return c.success(`${diffMins}m`);
+  if (diffHours < 24) return c.info(`${diffHours}h`);
+  if (diffDays < 7) return c.warn(`${diffDays}d`);
+  return c.error(`${diffDays}d`);
 }
 
 function formatLqi(lqi: number | undefined): string {
@@ -90,13 +109,57 @@ const commands: Record<string, {
           output(result);
         } else {
           console.log(c.success('✓ Connected to Zigbee2MQTT'));
-          console.log(`  Version: ${c.info(result.info?.version || 'unknown')}`);
-          console.log(`  Channel: ${c.info(String(result.info?.network?.channel || 'unknown'))}`);
-          console.log(`  Devices: Check with ${c.dim('z2m devices')}`);
+          const table = createTable(['Property', 'Value']);
+          table.push(
+            ['Version', c.info(result.info?.version || 'unknown')],
+            ['Channel', c.info(String(result.info?.network?.channel || 'unknown'))],
+            ['Coordinator', result.info?.coordinator?.type || 'unknown'],
+          );
+          console.log(table.toString());
         }
       } else {
         error(result.error || 'Connection failed');
       }
+    },
+  },
+
+  // Config commands
+  'config': {
+    description: 'Show current configuration',
+    action: async () => {
+      const config = loadConfig();
+      const resolved = resolveConfig({});
+      if (outputJson) {
+        output({ file: getConfigFilePath(), config, resolved });
+      } else {
+        console.log(c.bold('\nConfiguration\n'));
+        const table = createTable(['Source', 'URL', 'Timeout']);
+        table.push(
+          ['File', config.url || c.dim('not set'), config.timeout ? `${config.timeout}ms` : c.dim('not set')],
+          ['Resolved', c.info(resolved.url || ''), `${resolved.timeout}ms`],
+        );
+        console.log(table.toString());
+        console.log(c.dim(`\nConfig file: ${getConfigFilePath()}`));
+      }
+    },
+  },
+
+  'config:set': {
+    description: 'Set configuration value',
+    usage: '<url>',
+    action: async (args) => {
+      if (!args[0]) error('URL required');
+      const config = loadConfig();
+      config.url = args[0];
+      saveConfig(config);
+      output(outputJson ? { success: true, config } : c.success(`Configuration saved: ${args[0]}`));
+    },
+  },
+
+  'config:path': {
+    description: 'Show config file path',
+    action: async () => {
+      console.log(getConfigFilePath());
     },
   },
 
@@ -114,47 +177,52 @@ const commands: Record<string, {
           state: states[d.friendly_name] || null,
         })));
       } else {
-        console.log(c.bold('\n📡 Zigbee Devices\n'));
-
-        // Group by type
-        const coordinator = devices.filter(d => d.type === 'Coordinator');
         const routers = devices.filter(d => d.type === 'Router' && !d.disabled);
         const endDevices = devices.filter(d => d.type === 'EndDevice' && !d.disabled);
         const disabled = devices.filter(d => d.disabled);
 
-        console.log(`  Total: ${c.info(String(devices.length))} (${routers.length} routers, ${endDevices.length} end devices)\n`);
+        console.log(c.bold(`\nDevices (${devices.length})`));
+        console.log(c.dim(`${routers.length} routers, ${endDevices.length} end devices\n`));
 
-        if (coordinator.length > 0) {
-          console.log(c.bold('  Coordinator:'));
-          for (const d of coordinator) {
-            console.log(`    ${c.info(d.friendly_name)}`);
+        // Routers table
+        if (routers.length > 0) {
+          console.log(c.bold('Routers'));
+          const table = createTable(['Name', 'LQI', 'Model', 'Last Seen']);
+          for (const d of routers) {
+            const state = states[d.friendly_name];
+            table.push([
+              d.friendly_name,
+              formatLqi(state?.linkquality as number),
+              c.dim(d.definition?.model || '--'),
+              formatLastSeen(state?.last_seen as string),
+            ]);
           }
+          console.log(table.toString());
           console.log();
         }
 
-        console.log(c.bold('  Routers:'));
-        for (const d of routers) {
-          const state = states[d.friendly_name];
-          const lqi = formatLqi(state?.linkquality as number);
-          const lastSeen = formatLastSeen(state?.last_seen as string);
-          console.log(`    ${d.friendly_name.padEnd(35)} LQI: ${lqi.padEnd(12)} ${lastSeen}`);
+        // End devices table
+        if (endDevices.length > 0) {
+          console.log(c.bold('End Devices'));
+          const table = createTable(['Name', 'LQI', 'Battery', 'Model', 'Last Seen']);
+          for (const d of endDevices) {
+            const state = states[d.friendly_name];
+            table.push([
+              d.friendly_name,
+              formatLqi(state?.linkquality as number),
+              formatBattery(state?.battery as number),
+              c.dim(d.definition?.model || '--'),
+              formatLastSeen(state?.last_seen as string),
+            ]);
+          }
+          console.log(table.toString());
         }
-        console.log();
 
-        console.log(c.bold('  End Devices:'));
-        for (const d of endDevices) {
-          const state = states[d.friendly_name];
-          const lqi = formatLqi(state?.linkquality as number);
-          const battery = state?.battery !== undefined ? formatBattery(state.battery as number) : '';
-          const lastSeen = formatLastSeen(state?.last_seen as string);
-          console.log(`    ${d.friendly_name.padEnd(35)} LQI: ${lqi.padEnd(12)} ${battery.padEnd(8)} ${lastSeen}`);
-        }
-
+        // Disabled
         if (disabled.length > 0) {
-          console.log();
-          console.log(c.bold('  Disabled:'));
+          console.log(c.bold('\nDisabled'));
           for (const d of disabled) {
-            console.log(`    ${c.dim(d.friendly_name)}`);
+            console.log(`  ${c.dim(d.friendly_name)}`);
           }
         }
       }
@@ -176,31 +244,37 @@ const commands: Record<string, {
         output({ device, state });
       } else {
         const d = device!;
-        console.log(c.bold(`\n📱 ${d.friendly_name}\n`));
-        console.log(`  IEEE Address:  ${c.info(d.ieee_address)}`);
-        console.log(`  Type:          ${d.type}`);
-        console.log(`  Model:         ${d.definition?.model || 'unknown'}`);
-        console.log(`  Vendor:        ${d.definition?.vendor || 'unknown'}`);
-        console.log(`  Power Source:  ${d.power_source || 'unknown'}`);
-        console.log(`  Interview:     ${d.interview_completed ? c.success('completed') : c.error('incomplete')}`);
-        console.log(`  Disabled:      ${d.disabled ? c.warn('yes') : 'no'}`);
+        console.log(c.bold(`\n${d.friendly_name}\n`));
+
+        const infoTable = createTable(['Property', 'Value']);
+        infoTable.push(
+          ['IEEE Address', c.info(d.ieee_address)],
+          ['Type', d.type],
+          ['Model', d.definition?.model || 'unknown'],
+          ['Vendor', d.definition?.vendor || 'unknown'],
+          ['Power Source', d.power_source || 'unknown'],
+          ['Interview', d.interview_completed ? c.success('completed') : c.error('incomplete')],
+          ['Disabled', d.disabled ? c.warn('yes') : 'no'],
+        );
+        console.log(infoTable.toString());
 
         if (state) {
-          console.log(c.bold('\n  State:'));
-          const importantKeys = ['linkquality', 'battery', 'state', 'temperature', 'humidity', 'occupancy', 'contact', 'last_seen'];
+          console.log(c.bold('\nState'));
+          const stateTable = createTable(['Property', 'Value']);
+          const importantKeys = ['linkquality', 'battery', 'state', 'temperature', 'humidity', 'occupancy', 'contact', 'running_state', 'occupied_heating_setpoint'];
           for (const key of importantKeys) {
             if (state[key] !== undefined) {
               let value = String(state[key]);
               if (key === 'linkquality') value = formatLqi(state[key] as number);
               if (key === 'battery') value = formatBattery(state[key] as number);
-              if (key === 'last_seen') value = formatLastSeen(state[key] as string);
-              console.log(`    ${key.padEnd(16)} ${value}`);
+              stateTable.push([key, value]);
             }
           }
-          // Show other keys
-          const otherKeys = Object.keys(state).filter(k => !importantKeys.includes(k));
+          console.log(stateTable.toString());
+
+          const otherKeys = Object.keys(state).filter(k => !importantKeys.includes(k) && k !== 'last_seen');
           if (otherKeys.length > 0) {
-            console.log(c.dim(`\n  Other: ${otherKeys.join(', ')}`));
+            console.log(c.dim(`\nOther: ${otherKeys.join(', ')}`));
           }
         }
       }
@@ -254,11 +328,17 @@ const commands: Record<string, {
       if (outputJson) {
         output(devices);
       } else {
-        console.log(c.bold(`\n🔍 Found ${devices.length} device(s) matching "${args[0]}":\n`));
+        console.log(c.bold(`\nFound ${devices.length} device(s)\n`));
+        const table = createTable(['Name', 'Type', 'Model', 'Vendor']);
         for (const d of devices) {
-          console.log(`  ${c.info(d.friendly_name)}`);
-          console.log(`    ${c.dim(`${d.definition?.vendor || ''} ${d.definition?.model || ''}`)}`.trim());
+          table.push([
+            d.friendly_name,
+            d.type,
+            d.definition?.model || '--',
+            d.definition?.vendor || '--',
+          ]);
         }
+        console.log(table.toString());
       }
     },
   },
@@ -272,12 +352,18 @@ const commands: Record<string, {
       if (outputJson) {
         output(devices);
       } else {
-        console.log(c.bold(`\n🔌 Routers (${devices.length}):\n`));
+        console.log(c.bold(`\nRouters (${devices.length})\n`));
+        const table = createTable(['Name', 'LQI', 'Model', 'Last Seen']);
         for (const d of devices) {
           const state = states[d.friendly_name];
-          const lqi = formatLqi(state?.linkquality as number);
-          console.log(`  ${d.friendly_name.padEnd(35)} LQI: ${lqi}`);
+          table.push([
+            d.friendly_name,
+            formatLqi(state?.linkquality as number),
+            c.dim(d.definition?.model || '--'),
+            formatLastSeen(state?.last_seen as string),
+          ]);
         }
+        console.log(table.toString());
       }
     },
   },
@@ -291,13 +377,15 @@ const commands: Record<string, {
       if (outputJson) {
         output(groups);
       } else {
-        console.log(c.bold('\n👥 Groups:\n'));
+        console.log(c.bold('\nGroups\n'));
         if (groups.length === 0) {
           console.log(c.dim('  No groups defined'));
         } else {
+          const table = createTable(['ID', 'Name', 'Members']);
           for (const g of groups) {
-            console.log(`  ${c.info(String(g.id).padStart(4))} ${g.friendly_name} (${g.members.length} members)`);
+            table.push([String(g.id), g.friendly_name, String(g.members.length)]);
           }
+          console.log(table.toString());
         }
       }
     },
@@ -324,19 +412,20 @@ const commands: Record<string, {
       if (outputJson) {
         output(info);
       } else {
-        console.log(c.bold('\n🌉 Bridge Information\n'));
-        console.log(`  Version:        ${c.info(info.version)}`);
-        console.log(`  Commit:         ${c.dim(info.commit?.substring(0, 8) || 'unknown')}`);
-        console.log(`  Coordinator:    ${info.coordinator?.type || 'unknown'}`);
-        console.log(`  IEEE Address:   ${c.info(info.coordinator?.ieee_address || 'unknown')}`);
-        console.log();
-        console.log(c.bold('  Network:'));
-        console.log(`    Channel:      ${c.info(String(info.network?.channel))}`);
-        console.log(`    PAN ID:       ${info.network?.pan_id}`);
-        console.log(`    Extended PAN: ${info.network?.extended_pan_id}`);
-        console.log();
-        console.log(`  Log Level:      ${info.log_level}`);
-        console.log(`  Permit Join:    ${info.permit_join ? c.success('enabled') : 'disabled'}`);
+        console.log(c.bold('\nBridge Information\n'));
+        const table = createTable(['Property', 'Value']);
+        table.push(
+          ['Version', c.info(info.version)],
+          ['Commit', c.dim(info.commit?.substring(0, 8) || 'unknown')],
+          ['Coordinator', info.coordinator?.type || 'unknown'],
+          ['IEEE Address', c.info(info.coordinator?.ieee_address || 'unknown')],
+          ['Channel', c.info(String(info.network?.channel))],
+          ['PAN ID', String(info.network?.pan_id)],
+          ['Log Level', info.log_level],
+          ['Permit Join', info.permit_join ? c.success('enabled') : 'disabled'],
+        );
+        console.log(table.toString());
+
         if (info.restart_required) {
           console.log(c.warn('\n  ⚠ Restart required'));
         }
@@ -408,54 +497,65 @@ const commands: Record<string, {
       if (outputJson) {
         output(report);
       } else {
-        console.log(c.bold('\n🔍 Zigbee Network Diagnostic Report\n'));
+        console.log(c.bold('\nNetwork Diagnostic Report\n'));
 
-        // Summary
-        console.log(c.bold('Summary:'));
-        console.log(`  Devices:    ${c.info(String(report.summary.totalDevices))} (${report.summary.routers} routers, ${report.summary.endDevices} end devices)`);
-        console.log(`  Issues:     ${report.summary.criticalIssues > 0 ? c.error(String(report.summary.criticalIssues) + ' critical') : c.success('0 critical')}, ${report.summary.warnings > 0 ? c.warn(String(report.summary.warnings) + ' warnings') : '0 warnings'}`);
+        // Summary table
+        const summaryTable = createTable(['Metric', 'Value']);
+        summaryTable.push(
+          ['Total Devices', String(report.summary.totalDevices)],
+          ['Routers', String(report.summary.routers)],
+          ['End Devices', String(report.summary.endDevices)],
+          ['Critical Issues', report.summary.criticalIssues > 0 ? c.error(String(report.summary.criticalIssues)) : c.success('0')],
+          ['Warnings', report.summary.warnings > 0 ? c.warn(String(report.summary.warnings)) : '0'],
+        );
+        console.log(summaryTable.toString());
 
         if (report.issues.length === 0) {
-          console.log(c.success('\n✓ No issues detected!\n'));
+          console.log(c.success('\n✓ No issues detected!'));
         } else {
-          console.log(c.bold('\nIssues:\n'));
-
-          // Critical issues first
+          // Critical issues
           const critical = report.issues.filter(i => i.severity === 'critical');
           if (critical.length > 0) {
-            console.log(c.error('  CRITICAL:'));
+            console.log(c.bold('\nCritical Issues'));
+            const critTable = createTable(['Device', 'Issue']);
             for (const issue of critical) {
-              console.log(`    ${c.error('●')} ${issue.device}: ${issue.message}`);
+              critTable.push([c.error(issue.device), issue.message]);
             }
-            console.log();
+            console.log(critTable.toString());
           }
 
           // Warnings
           const warnings = report.issues.filter(i => i.severity === 'warning');
           if (warnings.length > 0) {
-            console.log(c.warn('  WARNINGS:'));
+            console.log(c.bold('\nWarnings'));
+            const warnTable = createTable(['Device', 'Issue']);
             for (const issue of warnings) {
-              console.log(`    ${c.warn('●')} ${issue.device}: ${issue.message}`);
+              warnTable.push([c.warn(issue.device), issue.message]);
             }
+            console.log(warnTable.toString());
           }
         }
 
-        // Low LQI devices table
+        // Low LQI devices
         const lowLqi = report.devices.filter(d => d.lqi !== undefined && d.lqi < 50);
         if (lowLqi.length > 0) {
-          console.log(c.bold('\nLow Signal Devices:'));
+          console.log(c.bold('\nLow Signal Devices'));
+          const lqiTable = createTable(['LQI', 'Device', 'Type']);
           for (const d of lowLqi.sort((a, b) => (a.lqi || 0) - (b.lqi || 0))) {
-            console.log(`  ${formatLqi(d.lqi).padEnd(12)} ${d.name} (${d.type})`);
+            lqiTable.push([formatLqi(d.lqi), d.name, d.type]);
           }
+          console.log(lqiTable.toString());
         }
 
         // Low battery devices
         const lowBattery = report.devices.filter(d => d.battery !== undefined && d.battery < 25);
         if (lowBattery.length > 0) {
-          console.log(c.bold('\nLow Battery Devices:'));
+          console.log(c.bold('\nLow Battery Devices'));
+          const batTable = createTable(['Battery', 'Device']);
           for (const d of lowBattery.sort((a, b) => (a.battery || 0) - (b.battery || 0))) {
-            console.log(`  ${formatBattery(d.battery).padEnd(8)} ${d.name}`);
+            batTable.push([formatBattery(d.battery), d.name]);
           }
+          console.log(batTable.toString());
         }
 
         console.log();
@@ -478,10 +578,9 @@ ${c.bold('Zigbee2MQTT CLI')} - Command-line interface for Zigbee2MQTT
 
 ${c.bold('USAGE:')}
   z2m [options] <command> [arguments]
-  z2m-cli [options] <command> [arguments]
 
 ${c.bold('OPTIONS:')}
-  -u, --url <url>      Zigbee2MQTT URL (default: $Z2M_URL or ws://localhost:8080)
+  -u, --url <url>      Zigbee2MQTT URL (default: $Z2M_URL or config file)
   -j, --json           Output raw JSON
   -h, --help           Show help
 
@@ -490,6 +589,7 @@ ${c.bold('COMMANDS:')}
 
   const categories: Record<string, string[]> = {
     'Connection': ['test'],
+    'Config': ['config', 'config:set', 'config:path'],
     'Devices': ['devices', 'device', 'device:set', 'device:rename', 'device:remove', 'devices:search', 'devices:routers'],
     'Groups': ['groups', 'group'],
     'Bridge': ['bridge:info', 'bridge:state', 'bridge:restart', 'bridge:permitjoin', 'bridge:loglevel'],
@@ -511,15 +611,16 @@ ${c.bold('COMMANDS:')}
 
   console.log(`${c.bold('EXAMPLES:')}
   z2m test                                  Test connection
+  z2m config:set wss://z2m.example.com/api  Save URL to config
   z2m devices                               List all devices
   z2m device "Kitchen Thermostat"           Get device details
   z2m device:set "Light" '{"state":"ON"}'   Turn on a light
   z2m diagnose                              Run network diagnostics
   z2m -j devices                            Get devices as JSON
-  z2m -u wss://z2m.example.com/api test     Connect to custom server
 
-${c.bold('ENVIRONMENT VARIABLES:')}
-  Z2M_URL     Default Zigbee2MQTT WebSocket URL (e.g., wss://z2m.example.com/api)
+${c.bold('CONFIGURATION:')}
+  Config file: ${c.dim(getConfigFilePath())}
+  Priority: CLI options > Environment ($Z2M_URL) > Config file > Defaults
 `);
 }
 

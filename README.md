@@ -4,13 +4,13 @@ A command-line interface for [Zigbee2MQTT](https://www.zigbee2mqtt.io/) built wi
 
 ## Features
 
-- List and manage Zigbee devices
+- List and manage Zigbee devices with formatted table output
 - View device states and send commands
 - Network diagnostics with automatic issue detection
 - Bridge management (restart, permit join, log level)
 - Group management
+- XDG-compliant configuration file
 - JSON output for scripting and automation
-- Zero external dependencies (except picocolors for terminal colors)
 
 ## Installation
 
@@ -25,19 +25,35 @@ bun install
 bun link
 ```
 
+## Configuration
+
+Configuration is stored at `~/.config/z2m-cli/config.json` following XDG conventions.
+
+```bash
+# Save your Z2M URL to config
+z2m config:set wss://z2m.example.com/api
+
+# View current configuration
+z2m config
+
+# Show config file path
+z2m config:path
+```
+
+**Priority order** (highest to lowest):
+1. CLI options (`-u, --url`)
+2. Environment variables (`Z2M_URL`)
+3. Config file
+4. Default (`ws://localhost:8080`)
+
 ## Usage
 
 ```bash
-# Set your Zigbee2MQTT URL
-export Z2M_URL="ws://localhost:8080"
-# or
-export Z2M_URL="wss://z2m.example.com/api"
-
-# Run commands
-bun run bin/z2m-cli.ts <command>
-
-# Or if linked globally
+# If configured via config file or Z2M_URL
 z2m <command>
+
+# Or specify URL directly
+z2m -u wss://z2m.example.com/api <command>
 ```
 
 ### Options
@@ -50,10 +66,13 @@ z2m <command>
 
 ## Commands
 
-### Connection
+### Connection & Configuration
 
 ```bash
-z2m test                    # Test connection to Zigbee2MQTT
+z2m test                    # Test connection
+z2m config                  # Show current config
+z2m config:set <url>        # Save URL to config
+z2m config:path             # Show config file path
 ```
 
 ### Devices
@@ -102,41 +121,77 @@ z2m diagnose                # Run full network diagnostics
 ## Examples
 
 ### List all devices
-```bash
+```
 $ z2m devices
 
-📡 Zigbee Devices
+Devices (53)
+13 routers, 37 end devices
 
-  Total: 53 (13 routers, 37 end devices)
+Routers
+   Name                         LQI    Model          Last Seen
+   Living Room Light            207    LCT001         now
+   Kitchen Plug                 156    SP600          2m
 
-  Routers:
-    Living Room Light                   LQI: 207         just now
-    Kitchen Plug                        LQI: 156         2m ago
-
-  End Devices:
-    Bedroom Thermostat                  LQI: 83          100%     just now
-    Front Door Sensor                   LQI: 120         87%      5m ago
+End Devices
+   Name                         LQI    Battery   Model     Last Seen
+   Bedroom Thermostat           83     100%      TRVZB     now
+   Front Door Sensor            120    87%       SNZB-04   5m
 ```
 
 ### Get device details
-```bash
+```
 $ z2m device "Kitchen Thermostat"
 
-📱 Kitchen Thermostat
+Kitchen Thermostat
 
-  IEEE Address:  0x0cae5ffffeb0151b
-  Type:          EndDevice
-  Model:         TRVZB
-  Vendor:        SONOFF
-  Power Source:  Battery
-  Interview:     completed
-  Disabled:      no
+   Property        Value
+   IEEE Address    0x0cae5ffffeb0151b
+   Type            EndDevice
+   Model           TRVZB
+   Vendor          SONOFF
+   Power Source    Battery
+   Interview       completed
+   Disabled        no
 
-  State:
-    linkquality      83
-    battery          49%
-    temperature      23.4
-    running_state    idle
+State
+   Property                     Value
+   linkquality                  83
+   battery                      49%
+   running_state                idle
+   occupied_heating_setpoint    21
+```
+
+### Run diagnostics
+```
+$ z2m diagnose
+
+Network Diagnostic Report
+
+   Metric             Value
+   Total Devices      53
+   Routers            13
+   End Devices        37
+   Critical Issues    1
+   Warnings           9
+
+Critical Issues
+   Device                  Issue
+   Lego Room Thermostat    Critical battery level (14%)
+
+Warnings
+   Device                              Issue
+   Basement Corridor Motion            Low battery level (21.5%)
+   Office Thermostat                   Low battery level (24%)
+
+Low Signal Devices
+   LQI    Device                 Type
+   40     Garden Back Light      Router
+   47     Garage Side Motion     EndDevice
+
+Low Battery Devices
+   Battery    Device
+   14%        Lego Room Thermostat
+   17%        Corridor Ground Floor Climate
 ```
 
 ### Control a device
@@ -149,35 +204,6 @@ z2m device:set "Living Room Light" '{"state":"ON","brightness":128}'
 
 # Set thermostat temperature
 z2m device:set "Bedroom Thermostat" '{"occupied_heating_setpoint":21}'
-```
-
-### Run diagnostics
-```bash
-$ z2m diagnose
-
-🔍 Zigbee Network Diagnostic Report
-
-Summary:
-  Devices:    53 (13 routers, 37 end devices)
-  Issues:     2 critical, 8 warnings
-
-Issues:
-
-  CRITICAL:
-    ● Garage Sensor: Critical signal quality (LQI: 12)
-    ● Office Thermostat: Critical battery level (14%)
-
-  WARNINGS:
-    ● Hallway Light: Low signal quality (LQI: 36)
-    ● Basement Motion: Low battery level (22%)
-
-Low Signal Devices:
-  12           Garage Sensor (EndDevice)
-  36           Hallway Light (EndDevice)
-
-Low Battery Devices:
-  14%      Office Thermostat
-  22%      Basement Motion
 ```
 
 ### JSON output for scripting
@@ -240,6 +266,8 @@ const states = await client.collectDeviceStates(5000);
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `Z2M_URL` | Zigbee2MQTT WebSocket URL | `ws://localhost:8080` |
+| `Z2M_TIMEOUT` | Request timeout in ms | `10000` |
+| `XDG_CONFIG_HOME` | Config directory | `~/.config` |
 
 ## URL Format
 

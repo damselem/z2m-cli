@@ -1,57 +1,131 @@
-# Claude Integration Guide for z2m-cli
+# CLAUDE.md - Project Context for Claude Code
 
-This document explains how to use z2m-cli with Claude for Zigbee2MQTT network management and diagnostics.
+## Project Overview
 
-## Quick Start
+This is a CLI tool for interacting with Zigbee2MQTT instances via the WebSocket API. It's built with Bun (not Node.js) and TypeScript.
 
-```bash
-cd /Users/damselem/dev/z2m-cli
-bun install
-export Z2M_URL="wss://z2m.numeroo.app/api"
+## Tech Stack
 
-# Test connection
-bun run bin/z2m-cli.ts test
+- **Runtime**: Bun (use `bun` commands, not `npm` or `node`)
+- **Language**: TypeScript
+- **Colors**: picocolors (not chalk or manual ANSI codes)
+- **Tables**: cli-table3 for formatted output
+- **CLI Parsing**: `Bun.argv` with Node's `util.parseArgs`
+- **WebSocket**: Bun's native WebSocket (no external libraries)
 
-# Run diagnostics
-bun run bin/z2m-cli.ts -j diagnose
+## Project Structure
+
+```
+z2m-cli/
+├── bin/
+│   └── z2m-cli.ts    # CLI entry point
+├── lib/
+│   ├── api.ts        # Z2M WebSocket API client
+│   └── config.ts     # XDG-compliant configuration
+├── package.json
+├── CLAUDE.md
+├── README.md
+└── bun.lock
 ```
 
-## CLI Commands
+## Key Commands
 
-### Connection
-- `z2m test` - Test connection to Z2M
+```bash
+# Run CLI during development
+bun run bin/z2m-cli.ts <command>
+
+# Run with watch mode
+bun --watch run bin/z2m-cli.ts <command>
+
+# Build standalone executable
+bun build bin/z2m-cli.ts --compile --outfile z2m-cli
+
+# Install globally for local development
+bun link
+```
+
+## Configuration
+
+Config is stored at `~/.config/z2m-cli/config.json` (XDG-compliant).
+
+Priority (highest to lowest):
+1. CLI options (`-u`)
+2. Environment variables (`Z2M_URL`)
+3. Config file
+4. Defaults (`ws://localhost:8080`)
+
+### Config Commands
+```bash
+z2m config              # Show current configuration
+z2m config:set <url>    # Save URL to config file
+z2m config:path         # Show config file path
+```
+
+## Environment Variables
+
+- `Z2M_URL` - Zigbee2MQTT WebSocket URL (default: ws://localhost:8080)
+- `Z2M_TIMEOUT` - Request timeout in ms (default: 10000)
+- `XDG_CONFIG_HOME` - Config directory (default: ~/.config)
+
+## Code Conventions
+
+- Use `picocolors` for terminal colors via the `pc` import
+- Semantic color aliases are defined in `bin/z2m-cli.ts`:
+  - `c.error` - red (for errors, critical LQI < 30, battery < 15%)
+  - `c.success` - green (for success, good LQI, battery > 25%)
+  - `c.warn` - yellow (for warnings, low LQI < 50, battery < 25%)
+  - `c.info` - cyan (for informational highlights)
+  - `c.bold` - bold (for headers)
+  - `c.dim` - dim (for secondary info)
+- Use `cli-table3` via `createTable()` helper for tabular output
+- All API calls go through the `Z2MClient` class in `lib/api.ts`
+- Use TypeScript types from the API module
+
+## Z2M WebSocket API Notes
+
+- Connect to `wss://host/api` or `ws://host:8080/api`
+- Messages are JSON: `{ topic: "...", payload: {...} }`
+- Device states are published with device name as topic
+- Bridge commands use `bridge/request/*` topics
+- Responses come on `bridge/response/*` or `bridge/*` topics
+
+## CLI Commands Reference
+
+### Connection & Config
+```bash
+z2m test                    # Test connection
+z2m config                  # Show config
+z2m config:set <url>        # Save URL
+```
 
 ### Devices
-- `z2m devices` - List all devices with LQI, battery, last seen
-- `z2m device <name>` - Get detailed device info and state
-- `z2m device:set <name> <json>` - Send command to device
-- `z2m device:rename <old> <new>` - Rename device
-- `z2m device:remove <name> [--force]` - Remove device
-- `z2m devices:search <query>` - Search by name/model/vendor
-- `z2m devices:routers` - List only routers
+```bash
+z2m devices                 # List all devices (table format)
+z2m device <name>           # Get device info and state
+z2m device:set <n> <json>   # Send command to device
+z2m device:rename <o> <n>   # Rename device
+z2m device:remove <name>    # Remove from network
+z2m devices:search <q>      # Search by name/model
+z2m devices:routers         # List only routers
+```
 
-### Groups
-- `z2m groups` - List all groups
-- `z2m group <name-or-id>` - Get group details
-
-### Bridge
-- `z2m bridge:info` - Bridge version, channel, coordinator info
-- `z2m bridge:state` - Bridge state
-- `z2m bridge:restart` - Restart bridge
-- `z2m bridge:permitjoin <on|off> [time]` - Permit join
-- `z2m bridge:loglevel <level>` - Set log level
-
-### Network
-- `z2m network:map` - Get raw network map
+### Bridge & Network
+```bash
+z2m bridge:info             # Bridge info (version, channel, etc.)
+z2m bridge:restart          # Restart bridge
+z2m bridge:permitjoin on    # Enable pairing
+z2m network:map             # Get network map (raw JSON)
+```
 
 ### Diagnostics
-- `z2m diagnose` - Run full network diagnostics
+```bash
+z2m diagnose                # Full network health check
+z2m -j diagnose             # JSON output for scripting
+```
 
 ## Using with Claude
 
-### Get JSON Output
-Always use `-j` flag when piping to Claude for analysis:
-
+### Always Use JSON for Analysis
 ```bash
 bun run bin/z2m-cli.ts -j diagnose
 bun run bin/z2m-cli.ts -j devices
@@ -59,9 +133,6 @@ bun run bin/z2m-cli.ts -j device "Kitchen Thermostat"
 ```
 
 ### Diagnostic Report Structure
-
-The `diagnose` command returns:
-
 ```typescript
 {
   summary: {
@@ -92,98 +163,46 @@ The `diagnose` command returns:
 }
 ```
 
-### Issue Types
+### Diagnostic Thresholds
 
-| Type | Severity | Threshold | Description |
-|------|----------|-----------|-------------|
-| `interview_incomplete` | critical | - | Device didn't complete Zigbee interview |
-| `lqi_critical` | critical | < 30 | Very weak signal, likely connection issues |
-| `lqi_low` | warning | < 50 | Weak signal, may have intermittent issues |
-| `battery_critical` | critical | < 15% | Battery needs immediate replacement |
-| `battery_low` | warning | < 25% | Battery should be replaced soon |
-| `stale` | warning | > 7 days | Battery device hasn't reported in a week |
+| Type | Severity | Threshold |
+|------|----------|-----------|
+| `interview_incomplete` | critical | Device didn't complete Zigbee interview |
+| `lqi_critical` | critical | < 30 |
+| `lqi_low` | warning | < 50 |
+| `battery_critical` | critical | < 15% |
+| `battery_low` | warning | < 25% |
+| `stale` | warning | > 7 days (battery devices) |
 
 ### Common Tasks
 
-#### 1. Network Health Check
-```bash
-bun run bin/z2m-cli.ts -j diagnose | jq '.summary'
-```
-
-#### 2. Find Problematic Devices
-```bash
-bun run bin/z2m-cli.ts -j diagnose | jq '.issues[] | select(.severity == "critical")'
-```
-
-#### 3. Get Device State
-```bash
-bun run bin/z2m-cli.ts -j device "Kitchen Thermostat" | jq '.state'
-```
-
-#### 4. Control Device
+#### Device Control
 ```bash
 # Turn on a light
-bun run bin/z2m-cli.ts device:set "Living Room Light" '{"state":"ON"}'
+z2m device:set "Living Room Light" '{"state":"ON"}'
 
 # Set thermostat
-bun run bin/z2m-cli.ts device:set "Bedroom Thermostat" '{"occupied_heating_setpoint":21}'
+z2m device:set "Bedroom Thermostat" '{"occupied_heating_setpoint":21}'
 
-# Trigger valve recalibration (SONOFF TRVZB)
-bun run bin/z2m-cli.ts device:set "Thermostat" '{"valve_closing_degree":0}'
+# SONOFF TRVZB valve recalibration
+z2m device:set "Thermostat" '{"valve_closing_degree":0}'
 sleep 2
-bun run bin/z2m-cli.ts device:set "Thermostat" '{"valve_closing_degree":100}'
+z2m device:set "Thermostat" '{"valve_closing_degree":100}'
 ```
 
-#### 5. List Low Battery Devices
+#### Filtering with jq
 ```bash
-bun run bin/z2m-cli.ts -j diagnose | jq '.devices | map(select(.battery != null and .battery < 25)) | sort_by(.battery)'
+# Critical issues only
+z2m -j diagnose | jq '.issues[] | select(.severity == "critical")'
+
+# Low battery devices
+z2m -j diagnose | jq '.devices | map(select(.battery != null and .battery < 25))'
+
+# Low LQI devices
+z2m -j diagnose | jq '.devices | map(select(.lqi != null and .lqi < 50)) | sort_by(.lqi)'
 ```
 
-#### 6. List Low LQI Devices
-```bash
-bun run bin/z2m-cli.ts -j diagnose | jq '.devices | map(select(.lqi != null and .lqi < 50)) | sort_by(.lqi)'
-```
+## Version Control
 
-## API Client Usage
-
-The Z2MClient class can be imported and used directly:
-
-```typescript
-import { Z2MClient } from './lib/api';
-
-const client = new Z2MClient({ url: 'wss://z2m.numeroo.app/api' });
-
-// Get all devices
-const devices = await client.getDevices();
-
-// Get device state
-const state = await client.getDeviceState('Kitchen Thermostat');
-
-// Send command
-await client.setDeviceState('Light', { state: 'ON', brightness: 128 });
-
-// Run diagnostics
-const report = await client.diagnose();
-
-// Collect all device states (5 seconds)
-const states = await client.collectDeviceStates(5000);
-```
-
-## Environment Variables
-
-- `Z2M_URL` - Zigbee2MQTT WebSocket URL (default: `ws://localhost:8080`)
-
-## Troubleshooting
-
-### Connection Timeout
-Increase timeout if your network is slow:
-```typescript
-const client = new Z2MClient({ url: '...', timeout: 20000 });
-```
-
-### WebSocket URL Format
-The URL should point to the Z2M WebSocket API:
-- Local: `ws://localhost:8080/api` or `ws://localhost:8080`
-- Remote: `wss://z2m.example.com/api`
-
-The client automatically appends `/api` if missing and converts `http(s)` to `ws(s)`.
+This project uses Jujutsu (jj) for version control with a Git remote at:
+`git@github.com:damselem/z2m-cli.git`

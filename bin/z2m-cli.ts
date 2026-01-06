@@ -159,7 +159,8 @@ const commands: Record<string, {
   'config:path': {
     description: 'Show config file path',
     action: async () => {
-      console.log(getConfigFilePath());
+      const path = getConfigFilePath();
+      output(outputJson ? { path } : path);
     },
   },
 
@@ -454,7 +455,12 @@ const commands: Record<string, {
     action: async () => {
       const client = getClient();
       const state = await client.getBridgeState();
-      output(state);
+      if (outputJson) {
+        output(state);
+      } else {
+        const status = state.state === 'online' ? c.success('online') : c.error(state.state || 'unknown');
+        console.log(`Bridge state: ${status}`);
+      }
     },
   },
 
@@ -494,11 +500,50 @@ const commands: Record<string, {
 
   // Network commands
   'network:map': {
-    description: 'Get network map (raw)',
+    description: 'Get network map',
     action: async () => {
       const client = getClient();
-      const map = await client.getNetworkMap();
-      output(map);
+      const map = await client.getNetworkMap() as { nodes?: Array<{ ieeeAddr: string; friendlyName: string; type: string; networkAddress: number; failed?: string[] }>; links?: Array<{ source: { ieeeAddr: string }; target: { ieeeAddr: string }; lqi: number; depth: number }> };
+      if (outputJson) {
+        output(map);
+      } else {
+        console.log(c.bold('\nNetwork Map\n'));
+
+        // Nodes summary
+        if (map.nodes && map.nodes.length > 0) {
+          const coordinator = map.nodes.filter(n => n.type === 'Coordinator');
+          const routers = map.nodes.filter(n => n.type === 'Router');
+          const endDevices = map.nodes.filter(n => n.type === 'EndDevice');
+
+          const summaryTable = createTable(['Type', 'Count']);
+          summaryTable.push(
+            ['Coordinator', String(coordinator.length)],
+            ['Routers', String(routers.length)],
+            ['End Devices', String(endDevices.length)],
+            ['Total', c.bold(String(map.nodes.length))],
+          );
+          console.log(summaryTable.toString());
+
+          // Links summary
+          if (map.links && map.links.length > 0) {
+            const avgLqi = Math.round(map.links.reduce((sum, l) => sum + l.lqi, 0) / map.links.length);
+            const weakLinks = map.links.filter(l => l.lqi < 50).length;
+
+            console.log(c.bold('\nLinks'));
+            const linksTable = createTable(['Metric', 'Value']);
+            linksTable.push(
+              ['Total Links', String(map.links.length)],
+              ['Average LQI', formatLqi(avgLqi)],
+              ['Weak Links (LQI < 50)', weakLinks > 0 ? c.warn(String(weakLinks)) : c.success('0')],
+            );
+            console.log(linksTable.toString());
+          }
+        } else {
+          console.log(c.dim('  No network map data available'));
+        }
+
+        console.log(c.dim('\nUse -j for full network map data'));
+      }
     },
   },
 

@@ -34,7 +34,7 @@ Configuration is stored at `~/.config/z2m-cli/config.json` following XDG convent
 z2m config:set wss://z2m.example.com/api
 
 # View current configuration
-z2m config
+z2m config:show
 
 # Show config file path
 z2m config:path
@@ -66,32 +66,35 @@ z2m -u wss://z2m.example.com/api <command>
 
 ## Commands
 
+All commands follow the `resource:action` pattern for consistency.
+
 ### Connection & Configuration
 
 ```bash
 z2m test                    # Test connection
-z2m config                  # Show current config
+z2m config:show             # Show current config
 z2m config:set <url>        # Save URL to config
 z2m config:path             # Show config file path
 ```
 
-### Devices
+### Device
 
 ```bash
-z2m devices                 # List all devices with LQI, battery, last seen
-z2m device <name>           # Get device info and current state
+z2m device:list             # List all devices with LQI, battery, last seen
+z2m device:list --type=Router  # List only router devices
+z2m device:get <name>       # Get device info and current state
 z2m device:set <name> <json>  # Send command to device
 z2m device:rename <old> <new> # Rename a device
 z2m device:remove <name>    # Remove device from network
-z2m devices:search <query>  # Search by name/model/vendor
-z2m devices:routers         # List only router devices
+z2m device:search <query>   # Search by name/model/vendor
 ```
 
-### Groups
+### Group
 
 ```bash
-z2m groups                  # List all groups
-z2m group <name-or-id>      # Get group details
+z2m group:list              # List all groups
+z2m group:get <name-or-id>  # Get group details
+z2m group:set <name> <json> # Send command to group
 ```
 
 ### Bridge
@@ -110,19 +113,14 @@ z2m bridge:loglevel debug   # Set log level
 
 ```bash
 z2m network:map             # Get raw network map data
-```
-
-### Diagnostics
-
-```bash
-z2m diagnose                # Run full network diagnostics
+z2m network:diagnose        # Run full network diagnostics
 ```
 
 ## Examples
 
 ### List all devices
 ```
-$ z2m devices
+$ z2m device:list
 
 Devices (53)
 13 routers, 37 end devices
@@ -140,7 +138,7 @@ End Devices
 
 ### Get device details
 ```
-$ z2m device "Kitchen Thermostat"
+$ z2m device:get "Kitchen Thermostat"
 
 Kitchen Thermostat
 
@@ -163,7 +161,7 @@ State
 
 ### Run diagnostics
 ```
-$ z2m diagnose
+$ z2m network:diagnose
 
 Network Diagnostic Report
 
@@ -209,18 +207,18 @@ z2m device:set "Bedroom Thermostat" '{"occupied_heating_setpoint":21}'
 ### JSON output for scripting
 ```bash
 # Get all devices as JSON
-z2m -j devices > devices.json
+z2m -j device:list > devices.json
 
 # Get diagnostic report as JSON
-z2m -j diagnose | jq '.issues[] | select(.severity == "critical")'
+z2m -j network:diagnose | jq '.issues[] | select(.severity == "critical")'
 
 # Extract low battery devices
-z2m -j diagnose | jq '.devices | map(select(.battery < 25))'
+z2m -j network:diagnose | jq '.devices | map(select(.battery < 25))'
 ```
 
 ## Diagnostic Thresholds
 
-The `diagnose` command automatically flags issues based on these thresholds:
+The `network:diagnose` command automatically flags issues based on these thresholds:
 
 | Issue | Severity | Threshold |
 |-------|----------|-----------|

@@ -56,7 +56,7 @@ Priority (highest to lowest):
 
 ### Config Commands
 ```bash
-z2m config              # Show current configuration
+z2m config:show         # Show current configuration
 z2m config:set <url>    # Save URL to config file
 z2m config:path         # Show config file path
 ```
@@ -91,45 +91,57 @@ z2m config:path         # Show config file path
 
 ## CLI Commands Reference
 
+All commands follow the `resource:action` pattern for consistency.
+
 ### Connection & Config
 ```bash
 z2m test                    # Test connection
-z2m config                  # Show config
+z2m config:show             # Show config
 z2m config:set <url>        # Save URL
+z2m config:path             # Show config file path
 ```
 
-### Devices
+### Device
 ```bash
-z2m devices                 # List all devices (table format)
-z2m device <name>           # Get device info and state
+z2m device:list             # List all devices (table format)
+z2m device:list --type=Router  # List only routers
+z2m device:get <name>       # Get device info and state
 z2m device:set <n> <json>   # Send command to device
 z2m device:rename <o> <n>   # Rename device
 z2m device:remove <name>    # Remove from network
-z2m devices:search <q>      # Search by name/model
-z2m devices:routers         # List only routers
+z2m device:search <q>       # Search by name/model/vendor
 ```
 
-### Bridge & Network
+### Group
+```bash
+z2m group:list              # List all groups
+z2m group:get <name>        # Get group details
+z2m group:set <name> <json> # Send command to group
+```
+
+### Bridge
 ```bash
 z2m bridge:info             # Bridge info (version, channel, etc.)
+z2m bridge:state            # Get bridge state
 z2m bridge:restart          # Restart bridge
 z2m bridge:permitjoin on    # Enable pairing
-z2m network:map             # Get network map (raw JSON)
+z2m bridge:loglevel <level> # Set log level
 ```
 
-### Diagnostics
+### Network
 ```bash
-z2m diagnose                # Full network health check
-z2m -j diagnose             # JSON output for scripting
+z2m network:map             # Get network map (raw JSON)
+z2m network:diagnose        # Full network health check
+z2m -j network:diagnose     # JSON output for scripting
 ```
 
 ## Using with Claude
 
 ### Always Use JSON for Analysis
 ```bash
-bun run bin/z2m-cli.ts -j diagnose
-bun run bin/z2m-cli.ts -j devices
-bun run bin/z2m-cli.ts -j device "Kitchen Thermostat"
+z2m -j network:diagnose
+z2m -j device:list
+z2m -j device:get "Kitchen Thermostat"
 ```
 
 ### Diagnostic Report Structure
@@ -193,13 +205,13 @@ z2m device:set "Thermostat" '{"valve_closing_degree":100}'
 #### Filtering with jq
 ```bash
 # Critical issues only
-z2m -j diagnose | jq '.issues[] | select(.severity == "critical")'
+z2m -j network:diagnose | jq '.issues[] | select(.severity == "critical")'
 
 # Low battery devices
-z2m -j diagnose | jq '.devices | map(select(.battery != null and .battery < 25))'
+z2m -j network:diagnose | jq '.devices | map(select(.battery != null and .battery < 25))'
 
 # Low LQI devices
-z2m -j diagnose | jq '.devices | map(select(.lqi != null and .lqi < 50)) | sort_by(.lqi)'
+z2m -j network:diagnose | jq '.devices | map(select(.lqi != null and .lqi < 50)) | sort_by(.lqi)'
 ```
 
 ## Version Control

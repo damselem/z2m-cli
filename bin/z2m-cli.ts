@@ -124,7 +124,7 @@ const commands: Record<string, {
   },
 
   // Config commands
-  'config': {
+  'config:show': {
     description: 'Show current configuration',
     action: async () => {
       const config = loadConfig();
@@ -145,7 +145,7 @@ const commands: Record<string, {
   },
 
   'config:set': {
-    description: 'Set configuration value',
+    description: 'Set configuration URL',
     usage: '<url>',
     action: async (args) => {
       if (!args[0]) error('URL required');
@@ -164,12 +164,20 @@ const commands: Record<string, {
   },
 
   // Device commands
-  'devices': {
+  'device:list': {
     description: 'List all devices',
-    action: async () => {
+    usage: '[--type=<Router|EndDevice>]',
+    action: async (args) => {
       const client = getClient();
-      const devices = await client.getDevices();
+      let devices = await client.getDevices();
       const states = await client.collectDeviceStates(4000);
+
+      // Filter by type if specified
+      const typeArg = args.find(a => a.startsWith('--type='));
+      if (typeArg) {
+        const filterType = typeArg.split('=')[1];
+        devices = devices.filter(d => d.type.toLowerCase() === filterType.toLowerCase());
+      }
 
       if (outputJson) {
         output(devices.map(d => ({
@@ -229,7 +237,7 @@ const commands: Record<string, {
     },
   },
 
-  'device': {
+  'device:get': {
     description: 'Get device info and state',
     usage: '<name>',
     action: async (args) => {
@@ -318,7 +326,7 @@ const commands: Record<string, {
     },
   },
 
-  'devices:search': {
+  'device:search': {
     description: 'Search devices by name/model/vendor',
     usage: '<query>',
     action: async (args) => {
@@ -343,33 +351,8 @@ const commands: Record<string, {
     },
   },
 
-  'devices:routers': {
-    description: 'List only router devices',
-    action: async () => {
-      const client = getClient();
-      const devices = await client.findDevicesByType('Router');
-      const states = await client.collectDeviceStates(4000);
-      if (outputJson) {
-        output(devices);
-      } else {
-        console.log(c.bold(`\nRouters (${devices.length})\n`));
-        const table = createTable(['Name', 'LQI', 'Model', 'Last Seen']);
-        for (const d of devices) {
-          const state = states[d.friendly_name];
-          table.push([
-            d.friendly_name,
-            formatLqi(state?.linkquality as number),
-            c.dim(d.definition?.model || '--'),
-            formatLastSeen(state?.last_seen as string),
-          ]);
-        }
-        console.log(table.toString());
-      }
-    },
-  },
-
   // Group commands
-  'groups': {
+  'group:list': {
     description: 'List all groups',
     action: async () => {
       const client = getClient();
@@ -391,7 +374,7 @@ const commands: Record<string, {
     },
   },
 
-  'group': {
+  'group:get': {
     description: 'Get group details',
     usage: '<name-or-id>',
     action: async (args) => {
@@ -399,7 +382,40 @@ const commands: Record<string, {
       const client = getClient();
       const group = await client.getGroup(args[0]);
       if (!group) error(`Group "${args[0]}" not found`);
-      output(group);
+
+      if (outputJson) {
+        output(group);
+      } else {
+        console.log(c.bold(`\n${group.friendly_name}\n`));
+        const table = createTable(['Property', 'Value']);
+        table.push(
+          ['ID', String(group.id)],
+          ['Members', String(group.members.length)],
+        );
+        console.log(table.toString());
+
+        if (group.members.length > 0) {
+          console.log(c.bold('\nMembers'));
+          const membersTable = createTable(['Device', 'Endpoint']);
+          for (const m of group.members) {
+            membersTable.push([m.ieee_address, String(m.endpoint)]);
+          }
+          console.log(membersTable.toString());
+        }
+      }
+    },
+  },
+
+  'group:set': {
+    description: 'Set group state',
+    usage: '<name-or-id> <json>',
+    action: async (args) => {
+      if (!args[0]) error('Group name or ID required');
+      if (!args[1]) error('JSON payload required');
+      const client = getClient();
+      const payload = JSON.parse(args[1]);
+      await client.setGroupState(args[0], payload);
+      output(outputJson ? { success: true } : c.success(`Command sent to group ${args[0]}`));
     },
   },
 
@@ -486,8 +502,7 @@ const commands: Record<string, {
     },
   },
 
-  // Diagnostics
-  'diagnose': {
+  'network:diagnose': {
     description: 'Run network diagnostics',
     action: async () => {
       const client = getClient();
@@ -589,12 +604,11 @@ ${c.bold('COMMANDS:')}
 
   const categories: Record<string, string[]> = {
     'Connection': ['test'],
-    'Config': ['config', 'config:set', 'config:path'],
-    'Devices': ['devices', 'device', 'device:set', 'device:rename', 'device:remove', 'devices:search', 'devices:routers'],
-    'Groups': ['groups', 'group'],
+    'Config': ['config:show', 'config:set', 'config:path'],
+    'Device': ['device:list', 'device:get', 'device:set', 'device:rename', 'device:remove', 'device:search'],
+    'Group': ['group:list', 'group:get', 'group:set'],
     'Bridge': ['bridge:info', 'bridge:state', 'bridge:restart', 'bridge:permitjoin', 'bridge:loglevel'],
-    'Network': ['network:map'],
-    'Diagnostics': ['diagnose'],
+    'Network': ['network:map', 'network:diagnose'],
     'Help': ['help'],
   };
 
@@ -610,13 +624,15 @@ ${c.bold('COMMANDS:')}
   }
 
   console.log(`${c.bold('EXAMPLES:')}
-  z2m test                                  Test connection
-  z2m config:set wss://z2m.example.com/api  Save URL to config
-  z2m devices                               List all devices
-  z2m device "Kitchen Thermostat"           Get device details
-  z2m device:set "Light" '{"state":"ON"}'   Turn on a light
-  z2m diagnose                              Run network diagnostics
-  z2m -j devices                            Get devices as JSON
+  z2m test                                    Test connection
+  z2m config:set wss://z2m.example.com/api    Save URL to config
+  z2m device:list                             List all devices
+  z2m device:list --type=Router               List only routers
+  z2m device:get "Kitchen Thermostat"         Get device details
+  z2m device:set "Light" '{"state":"ON"}'     Turn on a light
+  z2m group:set "Living Room" '{"state":"ON"}' Turn on a group
+  z2m network:diagnose                        Run network diagnostics
+  z2m -j device:list                          Get devices as JSON
 
 ${c.bold('CONFIGURATION:')}
   Config file: ${c.dim(getConfigFilePath())}

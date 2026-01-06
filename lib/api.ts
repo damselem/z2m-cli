@@ -291,6 +291,31 @@ export class Z2MClient {
     });
   }
 
+  async setGroupState(nameOrId: string, payload: Record<string, unknown>): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(this.wsUrl);
+
+      const timeoutId = setTimeout(() => {
+        ws.close();
+        resolve(); // Assume success if no error
+      }, 3000);
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ topic: `${nameOrId}/set`, payload }));
+        setTimeout(() => {
+          clearTimeout(timeoutId);
+          ws.close();
+          resolve();
+        }, 1000);
+      };
+
+      ws.onerror = (error) => {
+        clearTimeout(timeoutId);
+        reject(new Error(`Failed to set group state: ${error}`));
+      };
+    });
+  }
+
   async renameDevice(oldName: string, newName: string): Promise<void> {
     await this.request(
       'bridge/request/device/rename',

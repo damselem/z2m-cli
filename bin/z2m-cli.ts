@@ -352,6 +352,19 @@ const commands: Record<string, {
     },
   },
 
+  'device:describe': {
+    description: 'Set device description',
+    usage: '<name> <description>',
+    action: async (args) => {
+      if (!args[0]) error('Device name required');
+      if (!args[1]) error('Description required');
+      const client = getClient();
+      const description = args.slice(1).join(' ');
+      await client.setDeviceOptions(args[0], { description });
+      output(outputJson ? { success: true, device: args[0], description } : c.success(`Description set for ${args[0]}`));
+    },
+  },
+
   // Group commands
   'group:list': {
     description: 'List all groups',
@@ -503,9 +516,12 @@ const commands: Record<string, {
     description: 'Get network map',
     action: async () => {
       const client = getClient();
-      const map = await client.getNetworkMap() as { nodes?: Array<{ ieeeAddr: string; friendlyName: string; type: string; networkAddress: number; failed?: string[] }>; links?: Array<{ source: { ieeeAddr: string }; target: { ieeeAddr: string }; lqi: number; depth: number }> };
+      console.error(c.dim('Fetching network map (this may take a moment)...'));
+      const response = await client.getNetworkMap(60000) as { data?: { value?: { nodes?: Array<{ ieeeAddr: string; friendlyName: string; type: string; networkAddress: number; failed?: string[] }>; links?: Array<{ source: { ieeeAddr: string }; target: { ieeeAddr: string }; lqi: number; depth: number }> } } };
+      // Extract the actual map data from the response wrapper
+      const map = response.data?.value || response as { nodes?: Array<{ ieeeAddr: string; friendlyName: string; type: string; networkAddress: number; failed?: string[] }>; links?: Array<{ source: { ieeeAddr: string }; target: { ieeeAddr: string }; lqi: number; depth: number }> };
       if (outputJson) {
-        output(map);
+        output(response);
       } else {
         console.log(c.bold('\nNetwork Map\n'));
 
@@ -543,6 +559,172 @@ const commands: Record<string, {
         }
 
         console.log(c.dim('\nUse -j for full network map data'));
+      }
+    },
+  },
+
+  'network:routes': {
+    description: 'Show routing table (parent-child relationships)',
+    usage: '[--router=<name>]',
+    action: async () => {
+      const client = getClient();
+      console.error(c.dim('Fetching network map (this may take a moment)...'));
+
+      type NetworkNode = { ieeeAddr: string; friendlyName: string; type: string; networkAddress: number };
+      type NetworkLink = { source: { ieeeAddr: string; networkAddress: number }; target: { ieeeAddr: string; networkAddress: number }; lqi: number; depth: number; routes: Array<{ destinationAddress: number; status: string; nextHop: number }> };
+      type NetworkMap = { nodes?: NetworkNode[]; links?: NetworkLink[] };
+      type NetworkMapResponse = { data?: { value?: NetworkMap } } & NetworkMap;
+
+      const response = await client.getNetworkMap(60000) as NetworkMapResponse;
+      // Extract the actual map data from the response wrapper
+      const map: NetworkMap = response.data?.value || response;
+
+      if (!map.nodes || !map.links || map.nodes.length === 0) {
+        error('No network map data available. Try again or check Z2M logs.');
+      }
+
+      // Build lookup maps
+      const nodeByIeee = new Map<string, NetworkNode>();
+      const nodeByAddr = new Map<number, NetworkNode>();
+      for (const node of map.nodes!) {
+        nodeByIeee.set(node.ieeeAddr, node);
+        nodeByAddr.set(node.networkAddress, node);
+      }
+
+      // Build parent relationships from links
+      // In Z2M network map, links go from source (child) to target (parent/router)
+      const parentOf = new Map<string, { parent: NetworkNode; lqi: number }>();
+      const childrenOf = new Map<string, Array<{ child: NetworkNode; lqi: number }>>();
+
+      for (const link of map.links!) {
+        const sourceNode = nodeByIeee.get(link.source.ieeeAddr);
+        const targetNode = nodeByIeee.get(link.target.ieeeAddr);
+
+        if (sourceNode && targetNode) {
+          // source routes through target
+          parentOf.set(sourceNode.ieeeAddr, { parent: targetNode, lqi: link.lqi });
+
+          if (!childrenOf.has(targetNode.ieeeAddr)) {
+            childrenOf.set(targetNode.ieeeAddr, []);
+          }
+          childrenOf.get(targetNode.ieeeAddr)!.push({ child: sourceNode, lqi: link.lqi });
+        }
+      }
+
+      if (outputJson) {
+        const routes: Array<{
+          device: string;
+          ieee: string;
+          type: string;
+          parent: string | null;
+          parentIeee: string | null;
+          lqi: number | null;
+          children: Array<{ name: string; ieee: string; type: string; lqi: number }>;
+        }> = [];
+
+        for (const node of map.nodes!) {
+          const parentInfo = parentOf.get(node.ieeeAddr);
+          const children = childrenOf.get(node.ieeeAddr) || [];
+
+          routes.push({
+            device: node.friendlyName,
+            ieee: node.ieeeAddr,
+            type: node.type,
+            parent: parentInfo?.parent.friendlyName || null,
+            parentIeee: parentInfo?.parent.ieeeAddr || null,
+            lqi: parentInfo?.lqi || null,
+            children: children.map(c => ({
+              name: c.child.friendlyName,
+              ieee: c.child.ieeeAddr,
+              type: c.child.type,
+              lqi: c.lqi,
+            })),
+          });
+        }
+
+        output(routes);
+      } else {
+        console.log(c.bold('\nRouting Table\n'));
+
+        // Show coordinator and routers with their children
+        const coordinator = map.nodes!.find(n => n.type === 'Coordinator');
+        const routers = map.nodes!.filter(n => n.type === 'Router');
+
+        // Helper to display a router and its children
+        const displayRouter = (router: NetworkNode, indent: string = '') => {
+          const children = childrenOf.get(router.ieeeAddr) || [];
+          const routerParent = parentOf.get(router.ieeeAddr);
+
+          // Router header
+          const routerLqi = routerParent ? formatLqi(routerParent.lqi) : '';
+          const childCount = children.length;
+          console.log(`${indent}${c.info(router.friendlyName)} ${c.dim(`(${router.type})`)} ${routerLqi ? `LQI: ${routerLqi}` : ''}`);
+
+          if (childCount > 0) {
+            // Group children by type
+            const routerChildren = children.filter(c => c.child.type === 'Router');
+            const endDeviceChildren = children.filter(c => c.child.type === 'EndDevice');
+
+            // Show end devices first
+            for (const { child, lqi } of endDeviceChildren) {
+              console.log(`${indent}  ├─ ${child.friendlyName} ${c.dim('(EndDevice)')} LQI: ${formatLqi(lqi)}`);
+            }
+
+            // Show router children (they'll be expanded separately)
+            for (const { child, lqi } of routerChildren) {
+              console.log(`${indent}  ├─ ${c.info(child.friendlyName)} ${c.dim('(Router)')} LQI: ${formatLqi(lqi)}`);
+            }
+          } else {
+            console.log(`${indent}  ${c.dim('(no devices routing through this)')}`);
+          }
+        };
+
+        // Show coordinator first
+        if (coordinator) {
+          console.log(c.bold('Coordinator'));
+          displayRouter(coordinator);
+          console.log();
+        }
+
+        // Show each router grouped by their parent
+        console.log(c.bold('Routers'));
+        const routerTable = createTable(['Router', 'Parent', 'LQI', 'Children']);
+
+        for (const router of routers) {
+          const parentInfo = parentOf.get(router.ieeeAddr);
+          const children = childrenOf.get(router.ieeeAddr) || [];
+
+          routerTable.push([
+            c.info(router.friendlyName),
+            parentInfo?.parent.friendlyName || c.dim('Coordinator'),
+            formatLqi(parentInfo?.lqi),
+            String(children.length),
+          ]);
+        }
+        console.log(routerTable.toString());
+
+        // Show all device routes
+        console.log(c.bold('\nDevice Routes'));
+        const deviceTable = createTable(['Device', 'Type', 'Routes Through', 'LQI']);
+
+        // Sort: routers first, then end devices, then by name
+        const sortedNodes = [...map.nodes!]
+          .filter(n => n.type !== 'Coordinator')
+          .sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'Router' ? -1 : 1;
+            return a.friendlyName.localeCompare(b.friendlyName);
+          });
+
+        for (const node of sortedNodes) {
+          const parentInfo = parentOf.get(node.ieeeAddr);
+          deviceTable.push([
+            node.type === 'Router' ? c.info(node.friendlyName) : node.friendlyName,
+            node.type === 'Router' ? c.info(node.type) : c.dim(node.type),
+            parentInfo?.parent.friendlyName || c.dim('Coordinator (direct)'),
+            formatLqi(parentInfo?.lqi),
+          ]);
+        }
+        console.log(deviceTable.toString());
       }
     },
   },
@@ -650,10 +832,10 @@ ${c.bold('COMMANDS:')}
   const categories: Record<string, string[]> = {
     'Connection': ['test'],
     'Config': ['config:show', 'config:set', 'config:path'],
-    'Device': ['device:list', 'device:get', 'device:set', 'device:rename', 'device:remove', 'device:search'],
+    'Device': ['device:list', 'device:get', 'device:set', 'device:rename', 'device:remove', 'device:search', 'device:describe'],
     'Group': ['group:list', 'group:get', 'group:set'],
     'Bridge': ['bridge:info', 'bridge:state', 'bridge:restart', 'bridge:permitjoin', 'bridge:loglevel'],
-    'Network': ['network:map', 'network:diagnose'],
+    'Network': ['network:map', 'network:routes', 'network:diagnose'],
     'Help': ['help'],
   };
 

@@ -332,6 +332,14 @@ export class Z2MClient {
     );
   }
 
+  async setDeviceOptions(name: string, options: Record<string, unknown>): Promise<void> {
+    await this.request(
+      'bridge/request/device/options',
+      { id: name, options },
+      'bridge/response/device/options'
+    );
+  }
+
   // ============ Group Operations ============
 
   async getGroups(): Promise<Z2MGroup[]> {
@@ -376,12 +384,21 @@ export class Z2MClient {
 
   // ============ Network Operations ============
 
-  async getNetworkMap(): Promise<unknown> {
-    return this.request(
-      'bridge/request/networkmap',
-      { type: 'raw', routes: true },
-      'bridge/response/networkmap'
-    );
+  async getNetworkMap(timeout?: number): Promise<unknown> {
+    // Network map can take a long time, especially on large networks
+    const savedTimeout = this.timeout;
+    if (timeout) {
+      this.timeout = timeout;
+    }
+    try {
+      return await this.request(
+        'bridge/request/networkmap',
+        { type: 'raw', routes: true },
+        'bridge/response/networkmap'
+      );
+    } finally {
+      this.timeout = savedTimeout;
+    }
   }
 
   // ============ Diagnostic Operations ============

@@ -6,7 +6,9 @@ A command-line interface for [Zigbee2MQTT](https://www.zigbee2mqtt.io/) built wi
 
 - List and manage Zigbee devices with formatted table output
 - View device states and send commands
+- Set device descriptions with structured metadata (YAML format)
 - Network diagnostics with automatic issue detection
+- Routing table visualization (parent-child relationships)
 - Bridge management (restart, permit join, log level)
 - Group management
 - XDG-compliant configuration file
@@ -87,6 +89,7 @@ z2m device:set <name> <json>  # Send command to device
 z2m device:rename <old> <new> # Rename a device
 z2m device:remove <name>    # Remove device from network
 z2m device:search <query>   # Search by name/model/vendor
+z2m device:describe <name> <desc>  # Set device description
 ```
 
 ### Group
@@ -112,7 +115,8 @@ z2m bridge:loglevel debug   # Set log level
 ### Network
 
 ```bash
-z2m network:map             # Get raw network map data
+z2m network:map             # Get network topology summary
+z2m network:routes          # Show routing table (parent-child relationships)
 z2m network:diagnose        # Run full network diagnostics
 ```
 
@@ -204,6 +208,38 @@ z2m device:set "Living Room Light" '{"state":"ON","brightness":128}'
 z2m device:set "Bedroom Thermostat" '{"occupied_heating_setpoint":21}'
 ```
 
+### Set device descriptions
+```bash
+# Set a simple description
+z2m device:describe "Kitchen Thermostat" "Main kitchen radiator"
+
+# Use YAML format for structured metadata
+z2m device:describe "Kitchen Thermostat" $'floor: Ground Floor\nside: East'
+```
+
+### View routing table
+```
+$ z2m network:routes
+
+Routing Table
+
+Coordinator
+Coordinator (Coordinator)
+  ├─ Living Room Light (Router) LQI: 207
+  ├─ Kitchen Plug (Router) LQI: 156
+
+Routers
+   Router                    Parent              LQI    Children
+   Living Room Light         Coordinator         207    5
+   Garden Light              Living Room Light   92     3
+
+Device Routes
+   Device                    Type        Routes Through        LQI
+   Living Room Light         Router      Coordinator           207
+   Bedroom Thermostat        EndDevice   Living Room Light     156
+   Garden Sensor             EndDevice   Garden Light          89
+```
+
 ### JSON output for scripting
 ```bash
 # Get all devices as JSON
@@ -249,6 +285,12 @@ const state = await client.getDeviceState('Kitchen Light');
 
 // Send command
 await client.setDeviceState('Kitchen Light', { state: 'ON' });
+
+// Set device options (e.g., description)
+await client.setDeviceOptions('Kitchen Light', { description: 'floor: Ground Floor' });
+
+// Get network map with routing info
+const networkMap = await client.getNetworkMap();
 
 // Run diagnostics
 const report = await client.diagnose();

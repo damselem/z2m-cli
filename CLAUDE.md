@@ -93,46 +93,15 @@ z2m config:path         # Show config file path
 
 All commands follow the `resource:action` pattern for consistency.
 
-### Connection & Config
+To discover all available commands, run:
 ```bash
-z2m test                    # Test connection
-z2m config:show             # Show config
-z2m config:set <url>        # Save URL
-z2m config:path             # Show config file path
+z2m help
 ```
 
-### Device
+Use `-j` flag for JSON output (useful for scripting and analysis):
 ```bash
-z2m device:list             # List all devices (table format)
-z2m device:list --type=Router  # List only routers
-z2m device:get <name>       # Get device info and state
-z2m device:set <n> <json>   # Send command to device
-z2m device:rename <o> <n>   # Rename device
-z2m device:remove <name>    # Remove from network
-z2m device:search <q>       # Search by name/model/vendor
-```
-
-### Group
-```bash
-z2m group:list              # List all groups
-z2m group:get <name>        # Get group details
-z2m group:set <name> <json> # Send command to group
-```
-
-### Bridge
-```bash
-z2m bridge:info             # Bridge info (version, channel, etc.)
-z2m bridge:state            # Get bridge state
-z2m bridge:restart          # Restart bridge
-z2m bridge:permitjoin on    # Enable pairing
-z2m bridge:loglevel <level> # Set log level
-```
-
-### Network
-```bash
-z2m network:map             # Get network map (raw JSON)
-z2m network:diagnose        # Full network health check
-z2m -j network:diagnose     # JSON output for scripting
+z2m -j device:list
+z2m -j network:diagnose
 ```
 
 ## Using with Claude

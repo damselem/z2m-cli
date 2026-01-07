@@ -93,11 +93,18 @@ function formatBattery(battery: number | undefined): string {
 
 // Types for network map
 type NetworkNode = { ieeeAddr: string; friendlyName: string; type: string; networkAddress: number };
-type NetworkLink = { source: { ieeeAddr: string }; target: { ieeeAddr: string }; lqi: number };
+type NetworkLink = {
+  source: { ieeeAddr: string };
+  target: { ieeeAddr: string };
+  lqi: number;
+  relationship?: number;  // 0=parent, 1=child, 2=sibling, 3=none
+  depth?: number;         // 1-254=hops from coordinator, 255=unknown
+};
 type NetworkMap = { nodes?: NetworkNode[]; links?: NetworkLink[] };
 type NetworkMapResponse = { data?: { value?: NetworkMap } } & NetworkMap;
 
 // Get parent routing relationships from network map
+// Only uses links with relationship 0 or 1 (actual parent-child), ignores sibling links (2)
 async function getParentRouting(client: Z2MClient): Promise<Map<string, { parent: string; lqi: number }>> {
   const parentOf = new Map<string, { parent: string; lqi: number }>();
 
@@ -112,10 +119,22 @@ async function getParentRouting(client: Z2MClient): Promise<Map<string, { parent
       nodeByIeee.set(node.ieeeAddr, node);
     }
 
+    // First pass: only process parent-child relationships (relationship 0 or 1)
     for (const link of map.links) {
       const sourceNode = nodeByIeee.get(link.source.ieeeAddr);
       const targetNode = nodeByIeee.get(link.target.ieeeAddr);
-      if (sourceNode && targetNode) {
+      if (!sourceNode || !targetNode) continue;
+
+      // relationship 0: source reports target as its parent
+      // relationship 1: source reports target as its child (with valid depth = actual parent-child link)
+      // relationship 2: sibling/neighbor - skip these
+      // relationship 3: unknown - skip these
+      if (link.relationship === 0) {
+        // Source's parent is target
+        parentOf.set(sourceNode.friendlyName, { parent: targetNode.friendlyName, lqi: link.lqi });
+      } else if (link.relationship === 1 && link.depth !== undefined && link.depth < 255) {
+        // This is a parent-child link where source is child, target is parent
+        // (depth < 255 indicates a real tree relationship, not just a neighbor)
         parentOf.set(sourceNode.friendlyName, { parent: targetNode.friendlyName, lqi: link.lqi });
       }
     }
@@ -667,7 +686,14 @@ const commands: Record<string, {
       console.error(c.dim('Fetching network map (this may take a moment)...'));
 
       type NetworkNode = { ieeeAddr: string; friendlyName: string; type: string; networkAddress: number };
-      type NetworkLink = { source: { ieeeAddr: string; networkAddress: number }; target: { ieeeAddr: string; networkAddress: number }; lqi: number; depth: number; routes: Array<{ destinationAddress: number; status: string; nextHop: number }> };
+      type NetworkLink = {
+        source: { ieeeAddr: string; networkAddress: number };
+        target: { ieeeAddr: string; networkAddress: number };
+        lqi: number;
+        depth: number;
+        relationship?: number;  // 0=parent, 1=child, 2=sibling, 3=none, 4=previous child
+        routes: Array<{ destinationAddress: number; status: string; nextHop: number }>;
+      };
       type NetworkMap = { nodes?: NetworkNode[]; links?: NetworkLink[] };
       type NetworkMapResponse = { data?: { value?: NetworkMap } } & NetworkMap;
 
@@ -688,7 +714,8 @@ const commands: Record<string, {
       }
 
       // Build parent relationships from links
-      // In Z2M network map, links go from source (child) to target (parent/router)
+      // Only use links with relationship 0 (parent) or 1 (child with valid depth)
+      // Ignore relationship 2 (sibling) as those are neighbors, not routing paths
       const parentOf = new Map<string, { parent: NetworkNode; lqi: number }>();
       const childrenOf = new Map<string, Array<{ child: NetworkNode; lqi: number }>>();
 
@@ -696,7 +723,16 @@ const commands: Record<string, {
         const sourceNode = nodeByIeee.get(link.source.ieeeAddr);
         const targetNode = nodeByIeee.get(link.target.ieeeAddr);
 
-        if (sourceNode && targetNode) {
+        if (!sourceNode || !targetNode) continue;
+
+        // relationship 0: source reports target as its parent
+        // relationship 1: source reports target as its child (with valid depth = actual parent-child)
+        // relationship 2: sibling/neighbor - skip these
+        // relationship 3+: unknown/other - skip these
+        const isParentLink = link.relationship === 0;
+        const isChildLink = link.relationship === 1 && link.depth !== undefined && link.depth < 255;
+
+        if (isParentLink || isChildLink) {
           // source routes through target
           parentOf.set(sourceNode.ieeeAddr, { parent: targetNode, lqi: link.lqi });
 

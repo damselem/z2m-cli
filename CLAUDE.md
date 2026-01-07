@@ -157,6 +157,20 @@ z2m -j device:get "Kitchen Thermostat"
 
 ### Common Tasks
 
+#### Device Routing Info
+The `--routing` flag shows which router each device routes through. This requires fetching the network map, which can take time on first request.
+
+```bash
+# List devices with parent router info
+z2m device:list --routing
+
+# Get single device with routing info
+z2m device:get "Kitchen Thermostat" --routing
+
+# JSON output includes routes_through field when --routing is used
+z2m -j device:list --routing
+```
+
 #### Device Control
 ```bash
 # Turn on a light

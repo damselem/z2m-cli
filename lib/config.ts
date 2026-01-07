@@ -8,6 +8,10 @@ import { join } from 'path';
 export interface Config {
   url?: string;
   timeout?: number;
+  coordinator_location?: {
+    floor: string;
+    sector: string;
+  };
 }
 
 export interface ConfigPaths {

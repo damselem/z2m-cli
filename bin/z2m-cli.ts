@@ -91,6 +91,41 @@ function formatBattery(battery: number | undefined): string {
   return c.success(`${battery}%`);
 }
 
+// Types for network map
+type NetworkNode = { ieeeAddr: string; friendlyName: string; type: string; networkAddress: number };
+type NetworkLink = { source: { ieeeAddr: string }; target: { ieeeAddr: string }; lqi: number };
+type NetworkMap = { nodes?: NetworkNode[]; links?: NetworkLink[] };
+type NetworkMapResponse = { data?: { value?: NetworkMap } } & NetworkMap;
+
+// Get parent routing relationships from network map
+async function getParentRouting(client: Z2MClient): Promise<Map<string, { parent: string; lqi: number }>> {
+  const parentOf = new Map<string, { parent: string; lqi: number }>();
+
+  try {
+    const response = await client.getNetworkMap(60000) as NetworkMapResponse;
+    const map: NetworkMap = response.data?.value || response;
+
+    if (!map.nodes || !map.links) return parentOf;
+
+    const nodeByIeee = new Map<string, NetworkNode>();
+    for (const node of map.nodes) {
+      nodeByIeee.set(node.ieeeAddr, node);
+    }
+
+    for (const link of map.links) {
+      const sourceNode = nodeByIeee.get(link.source.ieeeAddr);
+      const targetNode = nodeByIeee.get(link.target.ieeeAddr);
+      if (sourceNode && targetNode) {
+        parentOf.set(sourceNode.friendlyName, { parent: targetNode.friendlyName, lqi: link.lqi });
+      }
+    }
+  } catch {
+    // Network map not available, return empty map
+  }
+
+  return parentOf;
+}
+
 // ============ Commands ============
 
 const commands: Record<string, {
@@ -139,6 +174,13 @@ const commands: Record<string, {
           ['Resolved', c.info(resolved.url || ''), `${resolved.timeout}ms`],
         );
         console.log(table.toString());
+
+        if (config.coordinator_location) {
+          console.log(c.bold('\nCoordinator Location'));
+          console.log(`  Floor: ${c.info(config.coordinator_location.floor)}`);
+          console.log(`  Sector: ${c.info(config.coordinator_location.sector)}`);
+        }
+
         console.log(c.dim(`\nConfig file: ${getConfigFilePath()}`));
       }
     },
@@ -167,11 +209,19 @@ const commands: Record<string, {
   // Device commands
   'device:list': {
     description: 'List all devices',
-    usage: '[--type=<Router|EndDevice>]',
+    usage: '[--type=<Router|EndDevice>] [--routing]',
     action: async (args) => {
       const client = getClient();
       let devices = await client.getDevices();
+      const showRouting = args.includes('--routing');
+
+      // Fetch states, and optionally routing info
       const states = await client.collectDeviceStates(4000);
+      let parentOf = new Map<string, { parent: string; lqi: number }>();
+      if (showRouting) {
+        console.error(c.dim('Fetching network map for routing info...'));
+        parentOf = await getParentRouting(client);
+      }
 
       // Filter by type if specified
       const typeArg = args.find(a => a.startsWith('--type='));
@@ -184,6 +234,7 @@ const commands: Record<string, {
         output(devices.map(d => ({
           ...d,
           state: states[d.friendly_name] || null,
+          ...(showRouting && { routes_through: parentOf.get(d.friendly_name)?.parent || null }),
         })));
       } else {
         const routers = devices.filter(d => d.type === 'Router' && !d.disabled);
@@ -196,15 +247,28 @@ const commands: Record<string, {
         // Routers table
         if (routers.length > 0) {
           console.log(c.bold('Routers'));
-          const table = createTable(['Name', 'LQI', 'Model', 'Last Seen']);
+          const headers = showRouting
+            ? ['Name', 'Parent', 'LQI', 'Model', 'Last Seen']
+            : ['Name', 'LQI', 'Model', 'Last Seen'];
+          const table = createTable(headers);
           for (const d of routers) {
             const state = states[d.friendly_name];
-            table.push([
-              d.friendly_name,
-              formatLqi(state?.linkquality as number),
-              c.dim(d.definition?.model || '--'),
-              formatLastSeen(state?.last_seen as string),
-            ]);
+            const routing = parentOf.get(d.friendly_name);
+            const row = showRouting
+              ? [
+                  d.friendly_name,
+                  routing ? c.info(routing.parent) : c.dim('Coordinator'),
+                  formatLqi(state?.linkquality as number),
+                  c.dim(d.definition?.model || '--'),
+                  formatLastSeen(state?.last_seen as string),
+                ]
+              : [
+                  d.friendly_name,
+                  formatLqi(state?.linkquality as number),
+                  c.dim(d.definition?.model || '--'),
+                  formatLastSeen(state?.last_seen as string),
+                ];
+            table.push(row);
           }
           console.log(table.toString());
           console.log();
@@ -213,16 +277,30 @@ const commands: Record<string, {
         // End devices table
         if (endDevices.length > 0) {
           console.log(c.bold('End Devices'));
-          const table = createTable(['Name', 'LQI', 'Battery', 'Model', 'Last Seen']);
+          const headers = showRouting
+            ? ['Name', 'Parent', 'LQI', 'Battery', 'Model', 'Last Seen']
+            : ['Name', 'LQI', 'Battery', 'Model', 'Last Seen'];
+          const table = createTable(headers);
           for (const d of endDevices) {
             const state = states[d.friendly_name];
-            table.push([
-              d.friendly_name,
-              formatLqi(state?.linkquality as number),
-              formatBattery(state?.battery as number),
-              c.dim(d.definition?.model || '--'),
-              formatLastSeen(state?.last_seen as string),
-            ]);
+            const routing = parentOf.get(d.friendly_name);
+            const row = showRouting
+              ? [
+                  d.friendly_name,
+                  routing ? c.info(routing.parent) : c.dim('Coordinator'),
+                  formatLqi(state?.linkquality as number),
+                  formatBattery(state?.battery as number),
+                  c.dim(d.definition?.model || '--'),
+                  formatLastSeen(state?.last_seen as string),
+                ]
+              : [
+                  d.friendly_name,
+                  formatLqi(state?.linkquality as number),
+                  formatBattery(state?.battery as number),
+                  c.dim(d.definition?.model || '--'),
+                  formatLastSeen(state?.last_seen as string),
+                ];
+            table.push(row);
           }
           console.log(table.toString());
         }
@@ -240,17 +318,30 @@ const commands: Record<string, {
 
   'device:get': {
     description: 'Get device info and state',
-    usage: '<name>',
+    usage: '<name> [--routing]',
     action: async (args) => {
-      if (!args[0]) error('Device name required');
-      const client = getClient();
-      const device = await client.getDevice(args[0]);
-      if (!device) error(`Device "${args[0]}" not found`);
+      const deviceName = args.find(a => !a.startsWith('--'));
+      if (!deviceName) error('Device name required');
+      const showRouting = args.includes('--routing');
 
-      const state = await client.getDeviceState(args[0]);
+      const client = getClient();
+      const device = await client.getDevice(deviceName);
+      if (!device) error(`Device "${deviceName}" not found`);
+
+      const state = await client.getDeviceState(deviceName);
+      let routing: { parent: string; lqi: number } | undefined;
+      if (showRouting) {
+        console.error(c.dim('Fetching network map for routing info...'));
+        const parentOf = await getParentRouting(client);
+        routing = parentOf.get(deviceName);
+      }
 
       if (outputJson) {
-        output({ device, state });
+        output({
+          device,
+          state,
+          ...(showRouting && { routes_through: routing?.parent || null }),
+        });
       } else {
         const d = device!;
         console.log(c.bold(`\n${d.friendly_name}\n`));
@@ -259,6 +350,11 @@ const commands: Record<string, {
         infoTable.push(
           ['IEEE Address', c.info(d.ieee_address)],
           ['Type', d.type],
+        );
+        if (showRouting) {
+          infoTable.push(['Routes Through', routing ? c.info(routing.parent) : c.dim('Coordinator')]);
+        }
+        infoTable.push(
           ['Model', d.definition?.model || 'unknown'],
           ['Vendor', d.definition?.vendor || 'unknown'],
           ['Power Source', d.power_source || 'unknown'],
@@ -729,6 +825,399 @@ const commands: Record<string, {
     },
   },
 
+  'network:routing-analysis': {
+    description: 'Analyze routing efficiency based on device locations',
+    action: async () => {
+      const client = getClient();
+      console.error(c.dim('Fetching network map and device data...'));
+
+      // Sector to grid coordinates mapping
+      // Grid: West(0)-Center(1)-East(2) on X axis, South(0)-Center(1)-North(2) on Y axis
+      const sectorCoords: Record<string, [number, number]> = {
+        'south-west': [0, 0], 'south-center': [1, 0], 'south-east': [2, 0],
+        'center-west': [0, 1], 'center': [1, 1], 'center-east': [2, 1],
+        'north-west': [0, 2], 'north-center': [1, 2], 'north-east': [2, 2],
+      };
+      const floorNum: Record<string, number> = {
+        'Basement': 0, 'Ground Floor': 1, 'Upper Floor': 2,
+      };
+
+      // Calculate Manhattan distance with floor weight
+      const calcDistance = (
+        a: { floor: string; sector: string },
+        b: { floor: string; sector: string }
+      ): number => {
+        const [ax, ay] = sectorCoords[a.sector] || [1, 1];
+        const [bx, by] = sectorCoords[b.sector] || [1, 1];
+        const az = floorNum[a.floor] ?? 1;
+        const bz = floorNum[b.floor] ?? 1;
+        // Floor transitions are harder for RF, weight them 1.5x
+        return Math.abs(ax - bx) + Math.abs(ay - by) + Math.abs(az - bz) * 1.5;
+      };
+
+      // Parse YAML-like description to extract location
+      const parseLocation = (description: string | undefined): { floor?: string; sector?: string } | null => {
+        if (!description) return null;
+        const lines = description.split('\n');
+        const result: Record<string, string> = {};
+        for (const line of lines) {
+          const match = line.match(/^(\w+):\s*(.+)$/);
+          if (match) {
+            result[match[1]] = match[2].trim();
+          }
+        }
+        if (result.floor && result.sector) {
+          return { floor: result.floor, sector: result.sector };
+        }
+        return null;
+      };
+
+      // Get devices with their descriptions
+      const devices = await client.getDevices();
+      const deviceLocations = new Map<string, { floor: string; sector: string }>();
+
+      for (const device of devices) {
+        // Description is in device options, need to fetch via API
+        // For now, we'll use a workaround - descriptions are stored but not directly exposed
+        // We need to get the full device info which includes description
+      }
+
+      // Fetch full device data including descriptions
+      const fullDevices = await client.getDevicesRaw();
+
+      // Get coordinator location from config
+      const config = loadConfig();
+      const coordinatorLocation = config.coordinator_location;
+
+      for (const device of fullDevices) {
+        // Coordinator doesn't support descriptions, use config if set
+        if (device.type === 'Coordinator' && coordinatorLocation) {
+          deviceLocations.set(device.friendly_name, coordinatorLocation);
+          continue;
+        }
+        const loc = parseLocation(device.description);
+        if (loc && loc.floor && loc.sector) {
+          deviceLocations.set(device.friendly_name, { floor: loc.floor, sector: loc.sector });
+        }
+      }
+
+      if (deviceLocations.size === 0) {
+        error('No device locations found. Run sector update script first to set device descriptions with floor/sector info.');
+      }
+
+      // Get network map for routing info
+      type NetworkNode = { ieeeAddr: string; friendlyName: string; type: string; networkAddress: number };
+      type NetworkLink = { source: { ieeeAddr: string }; target: { ieeeAddr: string }; lqi: number };
+      type NetworkMap = { nodes?: NetworkNode[]; links?: NetworkLink[] };
+      type NetworkMapResponse = { data?: { value?: NetworkMap } } & NetworkMap;
+
+      const response = await client.getNetworkMap(60000) as NetworkMapResponse;
+      const map: NetworkMap = response.data?.value || response;
+
+      if (!map.nodes || !map.links) {
+        error('No network map data available');
+      }
+
+      // Build lookup maps
+      const nodeByIeee = new Map<string, NetworkNode>();
+      for (const node of map.nodes!) {
+        nodeByIeee.set(node.ieeeAddr, node);
+      }
+
+      // Build parent relationships
+      const parentOf = new Map<string, { parent: NetworkNode; lqi: number }>();
+      for (const link of map.links!) {
+        const sourceNode = nodeByIeee.get(link.source.ieeeAddr);
+        const targetNode = nodeByIeee.get(link.target.ieeeAddr);
+        if (sourceNode && targetNode) {
+          parentOf.set(sourceNode.friendlyName, { parent: targetNode, lqi: link.lqi });
+        }
+      }
+
+      // Get all routers with locations
+      const routers = map.nodes!
+        .filter(n => n.type === 'Router' || n.type === 'Coordinator')
+        .map(n => ({
+          name: n.friendlyName,
+          type: n.type,
+          location: deviceLocations.get(n.friendlyName),
+        }))
+        .filter(r => r.location);
+
+      // Analyze routing for each device
+      interface RoutingAnalysis {
+        device: string;
+        deviceLocation: { floor: string; sector: string };
+        currentRouter: string;
+        currentRouterLocation?: { floor: string; sector: string };
+        currentDistance: number;
+        currentLqi: number;
+        betterOptions: Array<{
+          router: string;
+          location: { floor: string; sector: string };
+          distance: number;
+        }>;
+      }
+
+      // Build initial analysis for all devices
+      interface DeviceCandidate {
+        device: string;
+        deviceLoc: { floor: string; sector: string };
+        parentInfo: { parent: NetworkNode; lqi: number };
+        currentDistance: number;
+        potentialRouters: Array<{ router: string; distance: number; location: { floor: string; sector: string } }>;
+      }
+
+      const candidateMap = new Map<string, DeviceCandidate>();
+
+      for (const node of map.nodes!) {
+        if (node.type === 'Coordinator') continue;
+
+        const deviceLoc = deviceLocations.get(node.friendlyName);
+        if (!deviceLoc) continue;
+
+        const parentInfo = parentOf.get(node.friendlyName);
+        if (!parentInfo) continue;
+
+        const parentLoc = deviceLocations.get(parentInfo.parent.friendlyName);
+        const currentDistance = parentLoc ? calcDistance(deviceLoc, parentLoc) : 999;
+
+        const potentialRouters = routers
+          .filter(r => r.name !== parentInfo.parent.friendlyName && r.name !== node.friendlyName)
+          .map(r => ({
+            router: r.name,
+            location: r.location!,
+            distance: calcDistance(deviceLoc, r.location!),
+          }))
+          .filter(r => r.distance < currentDistance * 0.7)
+          .sort((a, b) => a.distance - b.distance);
+
+        candidateMap.set(node.friendlyName, { device: node.friendlyName, deviceLoc, parentInfo, currentDistance, potentialRouters });
+      }
+
+      // === CONFLICT-AWARE OPTIMIZATION ===
+
+      // Step 1: Identify conflicts (A wants B AND B wants A)
+      const conflicts = new Map<string, Set<string>>();
+      for (const [device, candidate] of candidateMap) {
+        const conflictSet = new Set<string>();
+        for (const router of candidate.potentialRouters) {
+          const routerCandidate = candidateMap.get(router.router);
+          if (routerCandidate?.potentialRouters.some(r => r.router === device)) {
+            conflictSet.add(router.router);
+          }
+        }
+        if (conflictSet.size > 0) conflicts.set(device, conflictSet);
+      }
+
+      // Step 2: Resolve conflicts by maximizing total improvement
+      const assignedRouting = new Map<string, string>();
+      const resolvedDevices = new Set<string>();
+
+      // Find connected components of conflicts
+      const visited = new Set<string>();
+      const components: string[][] = [];
+
+      for (const device of conflicts.keys()) {
+        if (visited.has(device)) continue;
+        const component: string[] = [];
+        const queue = [device];
+        while (queue.length > 0) {
+          const d = queue.shift()!;
+          if (visited.has(d)) continue;
+          visited.add(d);
+          component.push(d);
+          for (const conflicting of conflicts.get(d) || []) {
+            if (!visited.has(conflicting)) queue.push(conflicting);
+          }
+        }
+        components.push(component);
+      }
+
+      // Resolve each conflict component
+      for (const component of components) {
+        if (component.length === 2) {
+          // Simple pair: compare all options
+          const [a, b] = component;
+          const candA = candidateMap.get(a)!;
+          const candB = candidateMap.get(b)!;
+
+          const improvementAtoB = candA.currentDistance - (candA.potentialRouters.find(r => r.router === b)?.distance || candA.currentDistance);
+          const improvementBtoA = candB.currentDistance - (candB.potentialRouters.find(r => r.router === a)?.distance || candB.currentDistance);
+
+          // A's next best (excluding B)
+          const aNextBest = candA.potentialRouters.find(r => r.router !== b);
+          const aNextImprovement = aNextBest ? candA.currentDistance - aNextBest.distance : 0;
+
+          // B's next best (excluding A)
+          const bNextBest = candB.potentialRouters.find(r => r.router !== a);
+          const bNextImprovement = bNextBest ? candB.currentDistance - bNextBest.distance : 0;
+
+          // Option 1: A→B, B uses next best
+          const option1 = improvementAtoB + bNextImprovement;
+          // Option 2: B→A, A uses next best
+          const option2 = improvementBtoA + aNextImprovement;
+          // Option 3: Neither (both use next best)
+          const option3 = aNextImprovement + bNextImprovement;
+
+          if (option1 >= option2 && option1 >= option3 && option1 > 0) {
+            assignedRouting.set(a, b);
+            if (bNextBest) assignedRouting.set(b, bNextBest.router);
+          } else if (option2 >= option1 && option2 >= option3 && option2 > 0) {
+            assignedRouting.set(b, a);
+            if (aNextBest) assignedRouting.set(a, aNextBest.router);
+          } else {
+            if (aNextBest) assignedRouting.set(a, aNextBest.router);
+            if (bNextBest) assignedRouting.set(b, bNextBest.router);
+          }
+          resolvedDevices.add(a);
+          resolvedDevices.add(b);
+        } else if (component.length > 2) {
+          // Larger component: use greedy with total improvement consideration
+          // Sort by potential improvement, resolve one at a time
+          const sorted = component
+            .map(d => ({ device: d, candidate: candidateMap.get(d)! }))
+            .sort((a, b) => {
+              const aImprove = a.candidate.currentDistance - (a.candidate.potentialRouters[0]?.distance || a.candidate.currentDistance);
+              const bImprove = b.candidate.currentDistance - (b.candidate.potentialRouters[0]?.distance || b.candidate.currentDistance);
+              return bImprove - aImprove;
+            });
+
+          for (const { device, candidate } of sorted) {
+            const validRouter = candidate.potentialRouters.find(r => {
+              if (assignedRouting.get(r.router) === device) return false;
+              let current = assignedRouting.get(r.router);
+              const seen = new Set<string>();
+              while (current && !seen.has(current)) {
+                if (current === device) return false;
+                seen.add(current);
+                current = assignedRouting.get(current);
+              }
+              return true;
+            });
+            if (validRouter) assignedRouting.set(device, validRouter.router);
+            resolvedDevices.add(device);
+          }
+        }
+      }
+
+      // Step 3: Propagate - iterate until stable
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const [device, candidate] of candidateMap) {
+          if (assignedRouting.has(device)) continue;
+
+          // Check if any now-assigned router is a valid option
+          const validRouter = candidate.potentialRouters.find(r => {
+            if (assignedRouting.get(r.router) === device) return false;
+            let current = assignedRouting.get(r.router);
+            const seen = new Set<string>();
+            while (current && !seen.has(current)) {
+              if (current === device) return false;
+              seen.add(current);
+              current = assignedRouting.get(current);
+            }
+            return true;
+          });
+
+          if (validRouter) {
+            assignedRouting.set(device, validRouter.router);
+            changed = true;
+          }
+        }
+      }
+
+      // Step 4: Build final results
+      const anomalies: RoutingAnalysis[] = [];
+      const optimal: string[] = [];
+
+      for (const [device, candidate] of candidateMap) {
+        const assignedRouter = assignedRouting.get(device);
+        const parentLoc = deviceLocations.get(candidate.parentInfo.parent.friendlyName);
+
+        if (assignedRouter) {
+          // Filter to show only valid options (no cycles)
+          const validRouters = candidate.potentialRouters.filter(r => {
+            if (assignedRouting.get(r.router) === device) return false;
+            let current = assignedRouting.get(r.router);
+            const seen = new Set<string>();
+            while (current && !seen.has(current)) {
+              if (current === device) return false;
+              seen.add(current);
+              current = assignedRouting.get(current);
+            }
+            return true;
+          });
+
+          anomalies.push({
+            device: candidate.device,
+            deviceLocation: candidate.deviceLoc,
+            currentRouter: candidate.parentInfo.parent.friendlyName,
+            currentRouterLocation: parentLoc,
+            currentDistance: candidate.currentDistance,
+            currentLqi: candidate.parentInfo.lqi,
+            betterOptions: validRouters.slice(0, 3),
+          });
+        } else {
+          optimal.push(device);
+        }
+      }
+
+      if (outputJson) {
+        output({
+          summary: {
+            totalAnalyzed: anomalies.length + optimal.length,
+            anomalies: anomalies.length,
+            optimal: optimal.length,
+          },
+          anomalies,
+          optimal,
+        });
+      } else {
+        console.log(c.bold('\nRouting Analysis\n'));
+
+        const summaryTable = createTable(['Metric', 'Value']);
+        summaryTable.push(
+          ['Devices with location', String(deviceLocations.size)],
+          ['Routing anomalies', anomalies.length > 0 ? c.warn(String(anomalies.length)) : c.success('0')],
+          ['Optimal routing', c.success(String(optimal.length))],
+        );
+        console.log(summaryTable.toString());
+
+        if (anomalies.length > 0) {
+          console.log(c.bold('\nRouting Anomalies\n'));
+          console.log(c.dim('Devices routing through distant routers when closer ones exist:\n'));
+
+          for (const a of anomalies.sort((x, y) => y.currentDistance - x.currentDistance)) {
+            const deviceSector = `${a.deviceLocation.floor}, ${a.deviceLocation.sector}`;
+            const routerSector = a.currentRouterLocation
+              ? `${a.currentRouterLocation.floor}, ${a.currentRouterLocation.sector}`
+              : 'unknown';
+
+            console.log(`  ${c.warn(a.device)}`);
+            console.log(`    Location: ${c.info(deviceSector)}`);
+            console.log(`    Current:  ${a.currentRouter} (${routerSector}) ${c.dim(`dist=${a.currentDistance.toFixed(1)}, LQI=${a.currentLqi}`)}`);
+            console.log(`    Better:`);
+            for (const opt of a.betterOptions) {
+              const optSector = `${opt.location.floor}, ${opt.location.sector}`;
+              const improvement = ((a.currentDistance - opt.distance) / a.currentDistance * 100).toFixed(0);
+              console.log(`      ${c.success('→')} ${opt.router} (${optSector}) ${c.success(`dist=${opt.distance.toFixed(1)}`)} ${c.dim(`${improvement}% closer`)}`);
+            }
+            console.log();
+          }
+        } else {
+          console.log(c.success('\n✓ All devices have optimal routing!'));
+        }
+
+        if (deviceLocations.size < devices.length - 1) {
+          const missing = devices.length - 1 - deviceLocations.size;
+          console.log(c.dim(`\nNote: ${missing} devices missing location data (no sector in description)`));
+        }
+      }
+    },
+  },
+
   'network:diagnose': {
     description: 'Run network diagnostics',
     action: async () => {
@@ -835,7 +1324,7 @@ ${c.bold('COMMANDS:')}
     'Device': ['device:list', 'device:get', 'device:set', 'device:rename', 'device:remove', 'device:search', 'device:describe'],
     'Group': ['group:list', 'group:get', 'group:set'],
     'Bridge': ['bridge:info', 'bridge:state', 'bridge:restart', 'bridge:permitjoin', 'bridge:loglevel'],
-    'Network': ['network:map', 'network:routes', 'network:diagnose'],
+    'Network': ['network:map', 'network:routes', 'network:routing-analysis', 'network:diagnose'],
     'Help': ['help'],
   };
 
@@ -855,7 +1344,9 @@ ${c.bold('COMMANDS:')}
   z2m config:set wss://z2m.example.com/api    Save URL to config
   z2m device:list                             List all devices
   z2m device:list --type=Router               List only routers
+  z2m device:list --routing                   List devices with parent router info
   z2m device:get "Kitchen Thermostat"         Get device details
+  z2m device:get "Light" --routing            Get device with routing info
   z2m device:set "Light" '{"state":"ON"}'     Turn on a light
   z2m group:set "Living Room" '{"state":"ON"}' Turn on a group
   z2m network:diagnose                        Run network diagnostics
@@ -904,6 +1395,14 @@ async function main(): Promise<void> {
 
   // positionals[0] = bun, positionals[1] = script path, positionals[2+] = command & args
   const [command, ...commandArgs] = positionals.slice(2);
+
+  // Reconstruct command-specific flags from values (parseArgs consumes unknown flags)
+  const globalOptions = ['url', 'json', 'help'];
+  for (const [key, val] of Object.entries(values)) {
+    if (!globalOptions.includes(key) && val === true) {
+      commandArgs.push(`--${key}`);
+    }
+  }
 
   if (!command) {
     showHelp();

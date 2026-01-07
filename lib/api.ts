@@ -227,6 +227,10 @@ export class Z2MClient {
     return this.request('bridge/request/devices', {}, 'bridge/devices');
   }
 
+  async getDevicesRaw(): Promise<Array<Z2MDevice & { description?: string }>> {
+    return this.request('bridge/request/devices', {}, 'bridge/devices');
+  }
+
   async getDevice(nameOrIeee: string): Promise<Z2MDevice | null> {
     const devices = await this.getDevices();
     return devices.find(

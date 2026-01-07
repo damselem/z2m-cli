@@ -84,7 +84,9 @@ z2m config:path             # Show config file path
 ```bash
 z2m device:list             # List all devices with LQI, battery, last seen
 z2m device:list --type=Router  # List only router devices
+z2m device:list --routing   # Include parent router info (slower)
 z2m device:get <name>       # Get device info and current state
+z2m device:get <name> --routing  # Include routing info
 z2m device:set <name> <json>  # Send command to device
 z2m device:rename <old> <new> # Rename a device
 z2m device:remove <name>    # Remove device from network
@@ -140,6 +142,24 @@ End Devices
    Front Door Sensor            120    87%       SNZB-04   5m
 ```
 
+### List devices with routing info
+```
+$ z2m device:list --routing
+
+Devices (53)
+13 routers, 37 end devices
+
+Routers
+   Name                  Parent                LQI    Model     Last Seen
+   Living Room Light     Coordinator           207    LCT001    now
+   Kitchen Plug          Living Room Light     156    SP600     2m
+
+End Devices
+   Name                  Parent                LQI    Battery   Model     Last Seen
+   Bedroom Thermostat    Kitchen Plug          83     100%      TRVZB     now
+   Front Door Sensor     Living Room Light     120    87%       SNZB-04   5m
+```
+
 ### Get device details
 ```
 $ z2m device:get "Kitchen Thermostat"
@@ -161,6 +181,20 @@ State
    battery                      49%
    running_state                idle
    occupied_heating_setpoint    21
+```
+
+Use `--routing` to see which router the device routes through:
+```
+$ z2m device:get "Kitchen Thermostat" --routing
+
+Kitchen Thermostat
+
+   Property        Value
+   IEEE Address    0x0cae5ffffeb0151b
+   Type            EndDevice
+   Routes Through  Living Room Light
+   Model           TRVZB
+   ...
 ```
 
 ### Run diagnostics

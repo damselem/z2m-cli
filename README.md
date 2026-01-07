@@ -111,6 +111,7 @@ z2m bridge:restart          # Restart the bridge
 z2m bridge:permitjoin on    # Enable pairing mode
 z2m bridge:permitjoin off   # Disable pairing mode
 z2m bridge:permitjoin on 60 # Enable for 60 seconds
+z2m bridge:permitjoin on 120 --device="Router Name"  # Enable on specific router
 z2m bridge:loglevel debug   # Set log level
 ```
 

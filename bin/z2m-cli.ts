@@ -602,15 +602,40 @@ const commands: Record<string, {
   },
 
   'bridge:permitjoin': {
-    description: 'Enable/disable permit join',
-    usage: '<on|off> [time]',
+    description: 'Enable/disable permit join (optionally on specific device)',
+    usage: '<on|off> [time] [--device=<name>]',
     action: async (args) => {
       if (!args[0]) error('Specify on or off');
       const permit = args[0].toLowerCase() === 'on' || args[0] === 'true';
-      const time = args[1] ? parseInt(args[1]) : undefined;
+
+      // Parse time and device from args
+      let time: number | undefined;
+      let device: string | undefined;
+
+      for (let i = 1; i < args.length; i++) {
+        const arg = args[i];
+        if (arg.startsWith('--device=')) {
+          device = arg.slice('--device='.length);
+        } else if (arg.startsWith('-d=')) {
+          device = arg.slice('-d='.length);
+        } else if (!isNaN(parseInt(arg))) {
+          time = parseInt(arg);
+        } else {
+          // Assume it's a device name without flag (for convenience)
+          device = arg;
+        }
+      }
+
       const client = getClient();
-      await client.permitJoin(permit, time);
-      output(outputJson ? { success: true, permit_join: permit } : c.success(`Permit join: ${permit ? 'enabled' : 'disabled'}${time ? ` for ${time}s` : ''}`));
+      await client.permitJoin(permit, time, device);
+
+      const parts = [`Permit join: ${permit ? 'enabled' : 'disabled'}`];
+      if (time) parts.push(`for ${time}s`);
+      if (device) parts.push(`on ${device}`);
+
+      output(outputJson
+        ? { success: true, permit_join: permit, time, device }
+        : c.success(parts.join(' ')));
     },
   },
 
@@ -1435,8 +1460,12 @@ async function main(): Promise<void> {
   // Reconstruct command-specific flags from values (parseArgs consumes unknown flags)
   const globalOptions = ['url', 'json', 'help'];
   for (const [key, val] of Object.entries(values)) {
-    if (!globalOptions.includes(key) && val === true) {
-      commandArgs.push(`--${key}`);
+    if (!globalOptions.includes(key)) {
+      if (val === true) {
+        commandArgs.push(`--${key}`);
+      } else if (typeof val === 'string') {
+        commandArgs.push(`--${key}=${val}`);
+      }
     }
   }
 
